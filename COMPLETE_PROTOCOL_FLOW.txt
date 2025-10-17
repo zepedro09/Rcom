@@ -1,0 +1,286 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║                  COMPLETE DATA LINK PROTOCOL FLOW                           ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 1: CONNECTION ESTABLISHMENT (llopen)                                  │
+└────────────────────────────────────────────────────────────────────────────┘
+
+    TRANSMITTER                                    RECEIVER
+    ═══════════                                    ════════
+
+    llopen(params)                                 llopen(params)
+         │                                              │
+         │                                              │ Wait for SET
+         ├─── SET (A=0x03, C=0x03) ──────────────────→ │
+         │                                              │
+         │ Wait for UA                                  │ Validate SET
+         │                                              │ Send UA
+         │ ←────── UA (A=0x01, C=0x07) ────────────────┤
+         │                                              │
+    Connection ✓                                   Connection ✓
+         │                                              │
+         v                                              v
+    CONNECTED                                      CONNECTED
+
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 2: DATA TRANSFER (llwrite / llread)                                   │
+└────────────────────────────────────────────────────────────────────────────┘
+
+    TRANSMITTER                                    RECEIVER
+    ═══════════                                    ════════
+
+    llwrite(data, len)                             llread(buffer)
+         │                                              │
+    ┌────┴────────────────────────┐                    │
+    │ 1. Build I frame            │                    │
+    │    - A = 0x03               │                    │
+    │    - C = 0x00 (Ns=0)        │                    │
+    │    - BCC1 = A ^ C           │                    │
+    │                             │                    │
+    │ 2. Calculate BCC2           │                    │
+    │    - XOR all data bytes     │                    │
+    │                             │                    │
+    │ 3. Apply byte stuffing      │                    │
+    │    - 0x7E → 0x7D 0x5E       │                    │
+    │    - 0x7D → 0x7D 0x5D       │                    │
+    │                             │                    │
+    │ 4. Assemble frame           │                    │
+    │    [FLAG][A][C][BCC1]       │                    │
+    │    [STUFFED_DATA][FLAG]     │                    │
+    └────┬────────────────────────┘                    │
+         │                                              │
+         │                                         ┌────┴────────────────────────┐
+         ├─── I(Ns=0) ───────────────────────────→│ 1. Receive frame (state     │
+         │                                         │    machine)                  │
+         │ Start timeout                           │    - Wait for FLAG           │
+         │ Wait for RR1                            │    - Read A, C, BCC1         │
+         │                                         │    - Accumulate data         │
+         │                                         │    - Detect final FLAG       │
+         │                                         │                              │
+         │                                         │ 2. Validate BCC1             │
+         │                                         │    - Check A ^ C             │
+         │                                         │                              │
+         │                                         │ 3. Destuff data              │
+         │                                         │    - 0x7D 0x5E → 0x7E        │
+         │                                         │    - 0x7D 0x5D → 0x7D        │
+         │                                         │                              │
+         │                                         │ 4. Validate BCC2             │
+         │                                         │    - XOR all data            │
+         │                                         │    - Compare with received   │
+         │                                         │                              │
+         │                                         │ 5. Check sequence number     │
+         │                                         │    - Ns == expectedNs?       │
+         │                                         │                              │
+         │                                         │ 6. Send RR1                  │
+         │                                         └────┬────────────────────────┘
+         │                                              │
+         │ ←────── RR1 (A=0x01, C=0x85) ───────────────┤
+         │                                              │
+    Cancel timeout                                 Toggle expectedNs = 1
+    Toggle Ns = 1                                  Return data
+    Return success                                      │
+         │                                              │
+         │                                              │
+         │──────────────────────────────────────────────│
+         │                                              │
+         │         FRAME SUCCESSFULLY TRANSFERRED       │
+         │                                              │
+         └──────────────────────────────────────────────┘
+
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│ ERROR SCENARIOS                                                             │
+└────────────────────────────────────────────────────────────────────────────┘
+
+  Scenario A: TIMEOUT (Frame lost or delayed)
+  ───────────────────────────────────────────
+
+    TX                                    RX
+    ──                                    ──
+    
+    Send I(Ns=0) ──────X                  (nothing received)
+                   (lost)
+    
+    Timeout! (3s)
+    
+    Retransmit I(Ns=0) ─────────────────→ Receive I(Ns=0)
+                                          Validate ✓
+    ←─────── RR1 ────────────────────────  Send RR1
+    
+    Success!
+
+
+  Scenario B: BCC2 ERROR (Corrupted data)
+  ────────────────────────────────────────
+
+    TX                                    RX
+    ──                                    ──
+    
+    Send I(Ns=0) ────────────────────────→ Receive I(Ns=0)
+                                          BCC2 mismatch! ✗
+    ←─────── REJ0 ───────────────────────  Send REJ0
+    
+    REJ received!
+    
+    Retransmit I(Ns=0) ─────────────────→ Receive I(Ns=0)
+                                          Validate ✓
+    ←─────── RR1 ────────────────────────  Send RR1
+    
+    Success!
+
+
+  Scenario C: DUPLICATE FRAME (Lost acknowledgment)
+  ───────────────────────────────────────────────────
+
+    TX                                    RX
+    ──                                    ──
+    
+    Send I(Ns=0) ────────────────────────→ Receive I(Ns=0)
+                                          Validate ✓
+                                          expectedNs = 0 ✓
+    ←─────── RR1 ─────X───────────────────  Send RR1
+                  (lost)                  Toggle expectedNs = 1
+    
+    Timeout!
+    
+    Retransmit I(Ns=0) ─────────────────→ Receive I(Ns=0)
+                                          Ns=0 but expected 1
+                                          DUPLICATE! Discard.
+    ←─────── RR1 ────────────────────────  Send RR1 anyway
+    
+    Success!
+    (Data not duplicated at RX)
+
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 3: CONNECTION TERMINATION (llclose)                                   │
+└────────────────────────────────────────────────────────────────────────────┘
+
+    TRANSMITTER                                    RECEIVER
+    ═══════════                                    ════════
+
+    llclose()                                      llclose()
+         │                                              │
+         │                                              │ Wait for DISC
+         ├─── DISC (A=0x03, C=0x0B) ─────────────────→ │
+         │                                              │
+         │ Wait for DISC                                │ Validate DISC
+         │                                              │ Send DISC response
+         │ ←────── DISC (A=0x01, C=0x0B) ──────────────┤
+         │                                              │
+         │ Send UA                                      │ Wait for UA
+         ├─── UA (A=0x01, C=0x07) ────────────────────→ │
+         │                                              │
+         │ Close port                                   │ Validate UA
+         │                                              │ Close port
+         v                                              v
+    DISCONNECTED ✓                                 DISCONNECTED ✓
+
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│ SEQUENCE NUMBERS IN ACTION                                                  │
+└────────────────────────────────────────────────────────────────────────────┘
+
+    Frame #1:
+    TX: Ns=0 → Send I(Ns=0) → Wait RR1 → Receive RR1 → Ns=1
+    RX:                         Receive I(Ns=0) → expectedNs=0 ✓ → expectedNs=1
+
+    Frame #2:
+    TX: Ns=1 → Send I(Ns=1) → Wait RR0 → Receive RR0 → Ns=0
+    RX:                         Receive I(Ns=1) → expectedNs=1 ✓ → expectedNs=0
+
+    Frame #3:
+    TX: Ns=0 → Send I(Ns=0) → Wait RR1 → Receive RR1 → Ns=1
+    RX:                         Receive I(Ns=0) → expectedNs=0 ✓ → expectedNs=1
+
+    Pattern: Alternates between 0 and 1
+
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│ BYTE STUFFING EXAMPLE                                                       │
+└────────────────────────────────────────────────────────────────────────────┘
+
+    Original Data:
+    ┌────┬────┬────┬────┬────┬────┬────┐
+    │0x48│0x65│0x7E│0x6C│0x7D│0x6F│BCC2│
+    └────┴────┴────┴────┴────┴────┴────┘
+      H    e    ~    l    }    o
+
+    After Stuffing:
+    ┌────┬────┬────┬────┬────┬────┬────┬────┬────┬────┐
+    │0x48│0x65│0x7D│0x5E│0x6C│0x7D│0x5D│0x6F│0x7D│0x5E│
+    └────┴────┴────┴────┴────┴────┴────┴────┴────┴────┘
+      H    e   ESC  ^    l   ESC  ]    o   ESC  ^
+                  (was 0x7E)      (was 0x7D)    (BCC2 was 0x7E)
+
+    Complete Frame:
+    ┌────┬────┬────┬────┬──────────────────┬────┐
+    │FLAG│ A  │ C  │BCC1│  STUFFED DATA    │FLAG│
+    ├────┼────┼────┼────┼──────────────────┼────┤
+    │0x7E│0x03│0x00│0x03│ (10 bytes above) │0x7E│
+    └────┴────┴────┴────┴──────────────────┴────┘
+
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│ STATE MACHINE (llread)                                                      │
+└────────────────────────────────────────────────────────────────────────────┘
+
+         ┌─────────┐
+    ─────│ State 0 │  Wait for FLAG (0x7E)
+         └────┬────┘
+              │ FLAG
+              v
+         ┌─────────┐
+         │ State 1 │  Read Address (expect 0x03)
+         └────┬────┘
+              │ A=0x03
+              v
+         ┌─────────┐
+         │ State 2 │  Read Control (0x00 or 0x80)
+         └────┬────┘
+              │ C=0x00/0x80
+              v
+         ┌─────────┐
+         │ State 3 │  Read BCC1 (validate A ^ C)
+         └────┬────┘
+              │ BCC1 valid
+              v
+         ┌─────────┐
+         │ State 4 │  Read data until FLAG
+         └────┬────┘
+              │ FLAG
+              v
+         ┌─────────┐
+         │ Process │  Destuff, validate BCC2, send RR/REJ
+         └─────────┘
+
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│ PERFORMANCE METRICS                                                         │
+└────────────────────────────────────────────────────────────────────────────┘
+
+    Best Case (no errors):
+    ─────────────────────
+    Time per frame = Transmission time + RTT
+    Efficiency = 100% (all frames accepted first try)
+
+    With errors:
+    ────────────
+    Time per frame = (retries × timeout) + Transmission time + RTT
+    Efficiency = (successful frames) / (total attempts)
+
+    Example:
+    ────────
+    Payload: 100 bytes
+    Baud rate: 38400 bps = 4800 bytes/s
+    Transmission time: 100/4800 = 0.021s
+    RTT: 0.01s
+    Total: 0.031s per frame
+    Throughput: 100/0.031 = 3225 bytes/s ≈ 25800 bps
+
+
+╔════════════════════════════════════════════════════════════════════════════╗
+║  For complete documentation, see IMPLEMENTATION_SUMMARY.md                  ║
+╚════════════════════════════════════════════════════════════════════════════╝

@@ -1,0 +1,331 @@
+╔════════════════════════════════════════════════════════════════╗
+║           llwrite() & llread() QUICK REFERENCE                  ║
+╚════════════════════════════════════════════════════════════════╝
+
+┌──────────────────────────────────────────────────────────────┐
+│ FRAME FORMATS                                                 │
+└──────────────────────────────────────────────────────────────┘
+
+  Information (I) Frame
+  ┌──────┬──────┬──────┬──────┬─────────┬──────┬──────┐
+  │ 0x7E │ 0x03 │ Ns   │ BCC1 │ STUFFED │ BCC2 │ 0x7E │
+  └──────┴──────┴──────┴──────┴─────────┴──────┴──────┘
+   FLAG    A      C     A^C     DATA              FLAG
+
+  Ns Control Field:
+    Ns=0 → C=0x00
+    Ns=1 → C=0x80
+
+  BCC2 = XOR of all data bytes (before stuffing)
+
+  ─────────────────────────────────────────────────────────────
+
+  RR/REJ Frame (Receiver → Transmitter)
+  ┌──────┬──────┬──────┬──────┬──────┐
+  │ 0x7E │ 0x01 │  C   │ BCC1 │ 0x7E │
+  └──────┴──────┴──────┴──────┴──────┘
+   FLAG    A      RR/REJ A^C    FLAG
+
+  Control Field Values:
+    RR0  = 0x05  (Ready for frame 0)
+    RR1  = 0x85  (Ready for frame 1)
+    REJ0 = 0x01  (Reject frame 0)
+    REJ1 = 0x81  (Reject frame 1)
+
+┌──────────────────────────────────────────────────────────────┐
+│ BYTE STUFFING                                                 │
+└──────────────────────────────────────────────────────────────┘
+
+  Stuffing (before transmission):
+    0x7E  →  0x7D 0x5E
+    0x7D  →  0x7D 0x5D
+
+  Destuffing (after reception):
+    0x7D 0x5E  →  0x7E
+    0x7D 0x5D  →  0x7D
+
+  Example:
+    Original:  [0x01, 0x7E, 0x03, 0x7D, 0x05]
+    Stuffed:   [0x01, 0x7D, 0x5E, 0x03, 0x7D, 0x5D, 0x05]
+
+┌──────────────────────────────────────────────────────────────┐
+│ STOP & WAIT ARQ SEQUENCE                                      │
+└──────────────────────────────────────────────────────────────┘
+
+  Normal Operation:
+
+    TRANSMITTER                RECEIVER
+    ───────────                ────────
+    Ns = 0
+         │
+         ├──── I(Ns=0) ────────→│
+         │                       │ Validate
+         │                       │ expectedNs = 0
+         │←──── RR1 ─────────────┤
+         │                       │
+    Ns = 1                  expectedNs = 1
+         │
+         ├──── I(Ns=1) ────────→│
+         │                       │ Validate
+         │                       │ expectedNs = 1
+         │←──── RR0 ─────────────┤
+         │                       │
+    Ns = 0                  expectedNs = 0
+
+  Error & Retransmission:
+
+    TRANSMITTER                RECEIVER
+    ───────────                ────────
+         │
+         ├──── I(Ns=0) ────────→│
+         │                       │ BCC2 Error!
+         │←──── REJ0 ────────────┤
+         │                       │
+         ├──── I(Ns=0) ────────→│ Retransmit
+         │                       │ Valid!
+         │←──── RR1 ─────────────┤
+         │                       │
+
+  Timeout Scenario:
+
+    TRANSMITTER                RECEIVER
+    ───────────                ────────
+         │
+         ├──── I(Ns=0) ───X     │ Frame lost
+         │                       │
+      (timeout)                 │
+         │                       │
+         ├──── I(Ns=0) ────────→│ Retransmit
+         │                       │
+         │←──── RR1 ─────────────┤
+
+┌──────────────────────────────────────────────────────────────┐
+│ llwrite() ALGORITHM                                           │
+└──────────────────────────────────────────────────────────────┘
+
+  1. Build I frame header
+     ├─ A = 0x03
+     ├─ C = (Ns == 0) ? 0x00 : 0x80
+     └─ BCC1 = A ^ C
+
+  2. Calculate BCC2
+     └─ BCC2 = data[0] ^ data[1] ^ ... ^ data[n-1]
+
+  3. Apply byte stuffing
+     └─ Stuff (data + BCC2) together
+
+  4. Assemble frame
+     └─ [FLAG][A][C][BCC1][stuffed_data][FLAG]
+
+  5. Transmission loop (max retries)
+     ├─ Send frame
+     ├─ Start alarm
+     └─ Wait for RR/REJ
+        ├─ RR received?
+        │  ├─ Check Nr == (Ns+1)%2
+        │  ├─ Toggle Ns
+        │  └─ Return success
+        ├─ REJ received?
+        │  └─ Retransmit
+        └─ Timeout?
+           └─ Retransmit
+
+  6. Return bufSize or -1
+
+┌──────────────────────────────────────────────────────────────┐
+│ llread() ALGORITHM                                            │
+└──────────────────────────────────────────────────────────────┘
+
+  State Machine:
+    0 → Wait for FLAG
+    1 → Read A (expect 0x03)
+    2 → Read C (0x00 or 0x80)
+    3 → Read BCC1 (validate A^C)
+    4 → Read stuffed data until FLAG
+
+  1. Receive full I frame
+     └─ State machine byte-by-byte
+
+  2. Validate header
+     ├─ Check BCC1 == A ^ C
+     └─ Extract Ns from C
+
+  3. Destuff data
+     └─ Remove escape sequences
+
+  4. Validate BCC2
+     ├─ Calculate: XOR of all data bytes
+     └─ Compare with received BCC2
+
+  5. Check for duplicate
+     └─ If receivedNs != expectedNs
+        ├─ Duplicate! Send RR anyway
+        └─ Discard data
+
+  6. Send acknowledgment
+     ├─ Valid frame → RR((expectedNs+1)%2)
+     └─ Error → REJ(expectedNs)
+
+  7. Update state
+     ├─ Copy data to output
+     ├─ Toggle expectedNs
+     └─ Return data length
+
+┌──────────────────────────────────────────────────────────────┐
+│ HELPER FUNCTIONS                                              │
+└──────────────────────────────────────────────────────────────┘
+
+  int stuffBytes(input, len, output)
+    → Returns length after stuffing
+    → Applies escape sequences
+
+  int destuffBytes(input, len, output)
+    → Returns length after destuffing
+    → Removes escape sequences
+    → Returns -1 on invalid sequence
+
+  int receiveSupervisionFrame(controlField*)
+    → Returns: 1=RR, 2=REJ, 0=incomplete, -1=error
+    → Validates RR/REJ frame structure
+
+  int sendSupervisionFrame(controlField)
+    → Sends RR or REJ frame
+    → Returns 0 on success, -1 on error
+
+┌──────────────────────────────────────────────────────────────┐
+│ ERROR HANDLING                                                │
+└──────────────────────────────────────────────────────────────┘
+
+  Transmitter (llwrite):
+    • Timeout → Retransmit (up to nRetransmissions)
+    • REJ received → Retransmit same frame
+    • Wrong RR Nr → Ignore, wait for correct RR
+    • Max retries exceeded → Return -1
+
+  Receiver (llread):
+    • BCC1 error → Discard frame
+    • BCC2 error → Send REJ
+    • Duplicate frame → Send RR, discard data
+    • Invalid destuffing → Send REJ
+    • Buffer overflow → Send REJ
+
+┌──────────────────────────────────────────────────────────────┐
+│ SEQUENCE NUMBERS                                              │
+└──────────────────────────────────────────────────────────────┘
+
+  Global Variables:
+    static unsigned char Ns = 0;         // Transmitter
+    static unsigned char expectedNs = 0; // Receiver
+
+  Ns (Transmitter):
+    • Start at 0
+    • Toggle to 1 after successful transmission
+    • Toggle to 0 after next successful transmission
+    • Continues alternating...
+
+  expectedNs (Receiver):
+    • Start at 0
+    • Toggle to 1 after receiving valid frame 0
+    • Toggle to 0 after receiving valid frame 1
+    • Continues alternating...
+
+┌──────────────────────────────────────────────────────────────┐
+│ BCC CALCULATIONS                                              │
+└──────────────────────────────────────────────────────────────┘
+
+  BCC1 (Header Checksum):
+    BCC1 = A XOR C
+
+    Examples:
+      A=0x03, C=0x00 → BCC1 = 0x03
+      A=0x03, C=0x80 → BCC1 = 0x83
+      A=0x01, C=0x05 → BCC1 = 0x04 (RR0)
+      A=0x01, C=0x85 → BCC1 = 0x84 (RR1)
+
+  BCC2 (Data Checksum):
+    BCC2 = data[0] XOR data[1] XOR ... XOR data[n-1]
+
+    Example:
+      data = [0x48, 0x65, 0x6C, 0x6C, 0x6F]  // "Hello"
+      BCC2 = 0x48 ^ 0x65 ^ 0x6C ^ 0x6C ^ 0x6F = 0x00
+
+┌──────────────────────────────────────────────────────────────┐
+│ STATE MACHINE STATES (llread)                                 │
+└──────────────────────────────────────────────────────────────┘
+
+  State 0: Wait for FLAG (0x7E)
+    └─ On FLAG → State 1
+
+  State 1: Wait for Address
+    ├─ On 0x03 → State 2
+    ├─ On FLAG → Stay in State 1
+    └─ Other → State 0
+
+  State 2: Wait for Control
+    ├─ On 0x00 or 0x80 → State 3
+    ├─ On FLAG → State 1
+    └─ Other → State 0
+
+  State 3: Wait for BCC1
+    ├─ On valid BCC1 → State 4
+    ├─ On FLAG → State 1
+    └─ Other → State 0
+
+  State 4: Read Data
+    ├─ On FLAG → Frame complete, process
+    └─ Other → Accumulate byte
+
+┌──────────────────────────────────────────────────────────────┐
+│ TESTING CHECKLIST                                             │
+└──────────────────────────────────────────────────────────────┘
+
+  [ ] Byte stuffing works (0x7E and 0x7D)
+  [ ] Byte destuffing works
+  [ ] BCC1 calculated correctly
+  [ ] BCC2 calculated correctly
+  [ ] Sequence numbers toggle properly
+  [ ] Timeout triggers retransmission
+  [ ] REJ triggers retransmission
+  [ ] Duplicate frames detected and discarded
+  [ ] Max retries limit enforced
+  [ ] Small packets (< 10 bytes) work
+  [ ] Large packets (MAX_PAYLOAD_SIZE) work
+  [ ] Frame with all special bytes works
+
+┌──────────────────────────────────────────────────────────────┐
+│ COMMON BUGS                                                   │
+└──────────────────────────────────────────────────────────────┘
+
+  ✗ Forgetting to stuff BCC2 with data
+  ✗ Wrong control field for Ns (0x00 vs 0x80)
+  ✗ Not toggling Ns/expectedNs after success
+  ✗ Checking wrong sequence number in RR
+  ✗ State variable inside loop (not static)
+  ✗ Not resetting state on FLAG in middle of frame
+  ✗ Buffer overflow in stuffing
+  ✗ Off-by-one in destuffing loop
+
+┌──────────────────────────────────────────────────────────────┐
+│ DEBUG TIPS                                                    │
+└──────────────────────────────────────────────────────────────┘
+
+  Print frame contents:
+    printf("Frame: ");
+    for (int i = 0; i < len; i++)
+        printf("%02X ", frame[i]);
+    printf("\n");
+
+  Print state transitions:
+    printf("State %d → %d (byte=0x%02X)\n", old, new, byte);
+
+  Print sequence info:
+    printf("TX: Ns=%d, waiting for RR%d\n", Ns, (Ns+1)%2);
+    printf("RX: Got Ns=%d, expected=%d\n", rxNs, expectedNs);
+
+  Print BCC calculations:
+    printf("BCC1: 0x%02X ^ 0x%02X = 0x%02X\n", A, C, A^C);
+    printf("BCC2: calc=0x%02X, recv=0x%02X\n", calc, recv);
+
+╔════════════════════════════════════════════════════════════════╗
+║  Full docs: LLWRITE_LLREAD_IMPLEMENTATION.md                   ║
+╚════════════════════════════════════════════════════════════════╝

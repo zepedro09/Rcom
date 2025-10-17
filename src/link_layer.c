@@ -4,6 +4,10 @@
 #include "serial_port.h"
 
 #include <signal.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <stdlib.h>
 
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
@@ -16,6 +20,10 @@ volatile int STOP = FALSE;
 
 // Store connection parameters for llclose()
 static LinkLayer connectionParams;
+
+// Sequence number for Stop & Wait ARQ
+static unsigned char Ns = 0; // Transmitter sequence number (0 or 1)
+static unsigned char expectedNs = 0; // Receiver expected sequence number (0 or 1)
 
 
 ////////////////////////////////////////////////
@@ -41,13 +49,288 @@ int llopen(LinkLayer connectionParameters)
 }
 
 ////////////////////////////////////////////////
+// HELPER FUNCTIONS FOR BYTE STUFFING
+////////////////////////////////////////////////
+
+// Byte stuffing: Replace 0x7E with 0x7D 0x5E and 0x7D with 0x7D 0x5D
+// Returns the number of bytes after stuffing
+int stuffBytes(const unsigned char *input, int len, unsigned char *output)
+{
+    int outputLen = 0;
+    
+    for (int i = 0; i < len; i++)
+    {
+        if (input[i] == 0x7E)
+        {
+            output[outputLen++] = 0x7D;
+            output[outputLen++] = 0x5E;
+        }
+        else if (input[i] == 0x7D)
+        {
+            output[outputLen++] = 0x7D;
+            output[outputLen++] = 0x5D;
+        }
+        else
+        {
+            output[outputLen++] = input[i];
+        }
+    }
+    
+    return outputLen;
+}
+
+// Byte destuffing: Reverse of stuffing
+// Returns the number of bytes after destuffing, or -1 on error
+int destuffBytes(const unsigned char *input, int len, unsigned char *output)
+{
+    int outputLen = 0;
+    
+    for (int i = 0; i < len; i++)
+    {
+        if (input[i] == 0x7D)
+        {
+            if (i + 1 >= len)
+            {
+                // Invalid: escape byte at end of data
+                return -1;
+            }
+            
+            i++; // Skip to next byte
+            if (input[i] == 0x5E)
+            {
+                output[outputLen++] = 0x7E;
+            }
+            else if (input[i] == 0x5D)
+            {
+                output[outputLen++] = 0x7D;
+            }
+            else
+            {
+                // Invalid escape sequence
+                return -1;
+            }
+        }
+        else
+        {
+            output[outputLen++] = input[i];
+        }
+    }
+    
+    return outputLen;
+}
+
+// Helper function to receive RR or REJ frames
+// Returns: 1 for RR, 2 for REJ, 0 for incomplete, -1 for error
+int receiveSupervisionFrame(unsigned char *controlField)
+{
+    unsigned char byte;
+    static int state = 0;
+    static unsigned char receivedA = 0;
+    static unsigned char receivedC = 0;
+
+    const unsigned char FLAG = 0x7E;
+    const unsigned char A = 0x01; // Receiver sends with A=0x01
+
+    int res = readByteSerialPort(&byte);
+    if (res <= 0)
+        return 0;
+
+    switch (state)
+    {
+    case 0:
+        if (byte == FLAG) state = 1;
+        break;
+    case 1:
+        if (byte == A)
+        {
+            receivedA = byte;
+            state = 2;
+        }
+        else if (byte != FLAG) state = 0;
+        break;
+    case 2:
+        receivedC = byte;
+        // Check if it's RR or REJ
+        if (byte == 0x05 || byte == 0x85 || byte == 0x01 || byte == 0x81)
+        {
+            state = 3;
+        }
+        else if (byte == FLAG) state = 1;
+        else state = 0;
+        break;
+    case 3:
+        // Check BCC1
+        if (byte == (receivedA ^ receivedC))
+        {
+            state = 4;
+        }
+        else if (byte == FLAG) state = 1;
+        else state = 0;
+        break;
+    case 4:
+        if (byte == FLAG)
+        {
+            *controlField = receivedC;
+            state = 0;
+            
+            // Determine if RR or REJ
+            if (receivedC == 0x05 || receivedC == 0x85)
+                return 1; // RR
+            else if (receivedC == 0x01 || receivedC == 0x81)
+                return 2; // REJ
+        }
+        else state = 0;
+        break;
+    default:
+        state = 0;
+        break;
+    }
+
+    return 0;
+}
+
+// Helper function to send supervision frames (RR or REJ)
+int sendSupervisionFrame(unsigned char controlField)
+{
+    unsigned char frame[5];
+    const unsigned char FLAG = 0x7E;
+    const unsigned char A = 0x01; // Receiver sends with A=0x01
+    const unsigned char BCC1 = A ^ controlField;
+
+    frame[0] = FLAG;
+    frame[1] = A;
+    frame[2] = controlField;
+    frame[3] = BCC1;
+    frame[4] = FLAG;
+
+    int bytes = writeBytesSerialPort(frame, sizeof(frame));
+    return bytes == 5 ? 0 : -1;
+}
+
+////////////////////////////////////////////////
 // LLWRITE
 ////////////////////////////////////////////////
 int llwrite(const unsigned char *buf, int bufSize)
 {
-    // TODO: Implement this function
+    if (bufSize <= 0 || bufSize > MAX_PAYLOAD_SIZE)
+    {
+        printf("Error: Invalid buffer size %d\n", bufSize);
+        return -1;
+    }
 
-    return 0;
+    const unsigned char FLAG = 0x7E;
+    const unsigned char A = 0x03; // Transmitter sends with A=0x03
+    const unsigned char C = (Ns == 0) ? 0x00 : 0x80; // Control field with sequence number
+    const unsigned char BCC1 = A ^ C;
+
+    // Calculate BCC2 (XOR of all data bytes before stuffing)
+    unsigned char BCC2 = 0x00;
+    for (int i = 0; i < bufSize; i++)
+    {
+        BCC2 ^= buf[i];
+    }
+
+    // Prepare data + BCC2 for stuffing
+    unsigned char dataWithBCC2[MAX_PAYLOAD_SIZE + 1];
+    memcpy(dataWithBCC2, buf, bufSize);
+    dataWithBCC2[bufSize] = BCC2;
+
+    // Apply byte stuffing to data + BCC2
+    unsigned char stuffedData[MAX_PAYLOAD_SIZE * 2 + 2]; // Worst case: every byte needs stuffing
+    int stuffedLen = stuffBytes(dataWithBCC2, bufSize + 1, stuffedData);
+
+    // Build complete frame: FLAG | A | C | BCC1 | STUFFED_DATA | FLAG
+    unsigned char frame[MAX_PAYLOAD_SIZE * 2 + 10];
+    int frameLen = 0;
+    frame[frameLen++] = FLAG;
+    frame[frameLen++] = A;
+    frame[frameLen++] = C;
+    frame[frameLen++] = BCC1;
+    memcpy(frame + frameLen, stuffedData, stuffedLen);
+    frameLen += stuffedLen;
+    frame[frameLen++] = FLAG;
+
+    // Setup alarm handler
+    struct sigaction act = {0};
+    act.sa_handler = &alarmHandler;
+    if (sigaction(SIGALRM, &act, NULL) == -1)
+    {
+        perror("sigaction");
+        return -1;
+    }
+
+    int retries = 0;
+    int frameAccepted = FALSE;
+
+    printf("Transmitter: Sending I frame with Ns=%d\n", Ns);
+
+    while (retries < connectionParams.nRetransmissions && !frameAccepted)
+    {
+        retries++;
+
+        // Send I frame
+        int bytes = writeBytesSerialPort(frame, frameLen);
+        if (bytes < 0)
+        {
+            perror("Error sending I frame");
+            return -1;
+        }
+        printf("I frame sent (%d bytes, attempt #%d)\n", bytes, retries);
+
+        alarmEnabled = TRUE;
+        alarm(connectionParams.timeout);
+
+        // Wait for RR or REJ
+        while (alarmEnabled && !frameAccepted)
+        {
+            unsigned char controlField;
+            int result = receiveSupervisionFrame(&controlField);
+
+            if (result == 1) // RR received
+            {
+                // Extract sequence number from RR
+                unsigned char rrNr = (controlField == 0x85) ? 1 : 0;
+                
+                // Check if it's acknowledging our frame
+                if (rrNr == ((Ns + 1) % 2))
+                {
+                    printf("RR%d received - Frame acknowledged\n", rrNr);
+                    frameAccepted = TRUE;
+                    alarm(0);
+                    alarmEnabled = FALSE;
+                    
+                    // Toggle sequence number for next frame
+                    Ns = (Ns + 1) % 2;
+                }
+                else
+                {
+                    printf("RR%d received but expected RR%d - ignoring\n", 
+                           rrNr, (Ns + 1) % 2);
+                }
+            }
+            else if (result == 2) // REJ received
+            {
+                unsigned char rejNr = (controlField == 0x81) ? 1 : 0;
+                printf("REJ%d received - Retransmitting frame\n", rejNr);
+                alarm(0);
+                alarmEnabled = FALSE;
+                break; // Exit inner loop to retransmit
+            }
+        }
+
+        if (!frameAccepted && !alarmEnabled)
+        {
+            printf("Timeout #%d - retransmitting I frame...\n", retries);
+        }
+    }
+
+    if (!frameAccepted)
+    {
+        printf("Failed to send I frame after %d attempts\n", connectionParams.nRetransmissions);
+        return -1;
+    }
+
+    return bufSize;
 }
 
 ////////////////////////////////////////////////
@@ -55,9 +338,186 @@ int llwrite(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 int llread(unsigned char *packet)
 {
-    // TODO: Implement this function
-
-    return 0;
+    const unsigned char FLAG = 0x7E;
+    const unsigned char A = 0x03; // Transmitter sends with A=0x03
+    
+    int state = 0;
+    unsigned char receivedA = 0;
+    unsigned char receivedC = 0;
+    unsigned char receivedBCC1 = 0;
+    unsigned char receivedNs = 0;
+    
+    // Buffer for stuffed data (including BCC2)
+    unsigned char stuffedData[MAX_PAYLOAD_SIZE * 2 + 2];
+    int stuffedDataLen = 0;
+    
+    printf("Receiver: Waiting for I frame...\n");
+    
+    // State machine to receive I frame
+    while (TRUE)
+    {
+        unsigned char byte;
+        int res = readByteSerialPort(&byte);
+        
+        if (res < 0)
+        {
+            perror("Error reading from serial port");
+            return -1;
+        }
+        if (res == 0)
+        {
+            continue; // No data available
+        }
+        
+        switch (state)
+        {
+        case 0: // Wait for FLAG
+            if (byte == FLAG)
+            {
+                state = 1;
+                stuffedDataLen = 0;
+            }
+            break;
+            
+        case 1: // Wait for Address
+            if (byte == A)
+            {
+                receivedA = byte;
+                state = 2;
+            }
+            else if (byte == FLAG)
+            {
+                state = 1; // Stay in FLAG state
+            }
+            else
+            {
+                state = 0;
+            }
+            break;
+            
+        case 2: // Wait for Control
+            if (byte == 0x00 || byte == 0x80) // Valid control fields
+            {
+                receivedC = byte;
+                receivedNs = (byte == 0x80) ? 1 : 0;
+                state = 3;
+            }
+            else if (byte == FLAG)
+            {
+                state = 1;
+            }
+            else
+            {
+                state = 0;
+            }
+            break;
+            
+        case 3: // Wait for BCC1
+            receivedBCC1 = byte;
+            if (byte == (receivedA ^ receivedC))
+            {
+                state = 4; // BCC1 valid, move to data
+            }
+            else if (byte == FLAG)
+            {
+                state = 1;
+            }
+            else
+            {
+                printf("BCC1 error: expected 0x%02X, got 0x%02X\n", 
+                       receivedA ^ receivedC, byte);
+                state = 0; // Invalid BCC1, restart
+            }
+            break;
+            
+        case 4: // Read data (stuffed)
+            if (byte == FLAG)
+            {
+                // End of frame detected
+                printf("I frame received (Ns=%d, stuffed data length=%d)\n", 
+                       receivedNs, stuffedDataLen);
+                
+                // Destuff data
+                unsigned char destuffedData[MAX_PAYLOAD_SIZE + 1];
+                int destuffedLen = destuffBytes(stuffedData, stuffedDataLen, destuffedData);
+                
+                if (destuffedLen < 2) // Need at least 1 byte data + BCC2
+                {
+                    printf("Error: Destuffing failed or data too short\n");
+                    sendSupervisionFrame((expectedNs == 0) ? 0x01 : 0x81); // Send REJ
+                    state = 0;
+                    break;
+                }
+                
+                // Extract BCC2 (last byte)
+                unsigned char receivedBCC2 = destuffedData[destuffedLen - 1];
+                int dataLen = destuffedLen - 1;
+                
+                // Calculate expected BCC2
+                unsigned char calculatedBCC2 = 0x00;
+                for (int i = 0; i < dataLen; i++)
+                {
+                    calculatedBCC2 ^= destuffedData[i];
+                }
+                
+                // Validate BCC2
+                if (receivedBCC2 != calculatedBCC2)
+                {
+                    printf("BCC2 error: expected 0x%02X, got 0x%02X\n", 
+                           calculatedBCC2, receivedBCC2);
+                    sendSupervisionFrame((expectedNs == 0) ? 0x01 : 0x81); // Send REJ
+                    state = 0;
+                    break;
+                }
+                
+                // Check sequence number
+                if (receivedNs != expectedNs)
+                {
+                    printf("Duplicate frame (Ns=%d, expected=%d) - sending RR anyway\n", 
+                           receivedNs, expectedNs);
+                    // Send RR for next expected frame
+                    sendSupervisionFrame((expectedNs == 0) ? 0x85 : 0x05);
+                    state = 0;
+                    break;
+                }
+                
+                // Frame is valid and new
+                printf("Frame valid - sending RR%d\n", (expectedNs + 1) % 2);
+                
+                // Copy data to output packet
+                memcpy(packet, destuffedData, dataLen);
+                
+                // Send RR acknowledging this frame
+                sendSupervisionFrame(((expectedNs + 1) % 2 == 1) ? 0x85 : 0x05);
+                
+                // Toggle expected sequence number
+                expectedNs = (expectedNs + 1) % 2;
+                
+                return dataLen;
+            }
+            else
+            {
+                // Accumulate data bytes
+                if (stuffedDataLen < MAX_PAYLOAD_SIZE * 2 + 2)
+                {
+                    stuffedData[stuffedDataLen++] = byte;
+                }
+                else
+                {
+                    printf("Error: Data buffer overflow\n");
+                    sendSupervisionFrame((expectedNs == 0) ? 0x01 : 0x81); // Send REJ
+                    state = 0;
+                }
+            }
+            break;
+            
+        default:
+            state = 0;
+            break;
+        }
+    }
+    
+    return -1;
 }
 
 ////////////////////////////////////////////////
