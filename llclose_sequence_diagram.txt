@@ -1,0 +1,144 @@
+/**
+ * LLCLOSE PROTOCOL SEQUENCE DIAGRAM
+ * ==================================
+ * 
+ * SUCCESSFUL DISCONNECTION SEQUENCE
+ * ---------------------------------
+ * 
+ *     TRANSMITTER (Tx)                    RECEIVER (Rx)
+ *     ================                    =============
+ *     
+ *     llclose() called
+ *          |
+ *          v
+ *     txDisconnect()
+ *          |
+ *          |--- DISC (A=0x03, C=0x0B) ---->
+ *          |                                    |
+ *          |                                    v
+ *          |                               receiveDISC(0x03)
+ *          |                                    |
+ *          |                                    | DISC received
+ *          |                                    v
+ *          |<--- DISC (A=0x01, C=0x0B) ----    |
+ *          |                                    |
+ *          v                                    |
+ *     receiveDISC(0x01)                        |
+ *          |                                    |
+ *          | DISC received                      |
+ *          v                                    |
+ *          |--- UA (A=0x01, C=0x07) ------>    |
+ *          |                                    v
+ *          |                               Wait for UA (A=0x03)
+ *          |                                    |
+ *          v                                    | ERROR: Wrong address!
+ *     closeSerialPort()                         |
+ *          |                                    v
+ *          v                                Timeout / Error
+ *       SUCCESS                                 |
+ *                                               v
+ *                                          closeSerialPort()
+ *                                               |
+ *                                               v
+ *                                            ERROR
+ * 
+ * 
+ * CORRECTED SEQUENCE (What actually happens):
+ * -------------------------------------------
+ * 
+ *     TRANSMITTER (Tx)                    RECEIVER (Rx)
+ *     ================                    =============
+ *     
+ *     llclose() called                    llclose() called
+ *          |                                    |
+ *          v                                    v
+ *     txDisconnect()                       rxDisconnect()
+ *          |                                    |
+ *          |                                    | Wait for DISC
+ *          |--- DISC (A=0x03, C=0x0B) ---->    |
+ *          |                                    v
+ *          | Wait for DISC response         receiveDISC(0x03)
+ *          |                                    |
+ *          |                                    | Send DISC response
+ *          |<--- DISC (A=0x01, C=0x0B) ----    |
+ *          v                                    |
+ *     receiveDISC(0x01)                        | Wait for UA
+ *          |                                    |
+ *          | Send UA                            |
+ *          |--- UA (A=0x01, C=0x07) ------>    |
+ *          |                                    v
+ *          v                               UA state machine
+ *     closeSerialPort()                         |
+ *          |                                    | UA received!
+ *          v                                    v
+ *       SUCCESS                           closeSerialPort()
+ *                                               |
+ *                                               v
+ *                                            SUCCESS
+ * 
+ * 
+ * FRAME STRUCTURE
+ * ---------------
+ * 
+ * All frames follow this structure:
+ * +------+-----+-----+-----+------+
+ * | FLAG |  A  |  C  | BCC | FLAG |
+ * +------+-----+-----+-----+------+
+ * | 0x7E | ... | ... | ... | 0x7E |
+ * +------+-----+-----+-----+------+
+ * 
+ * Where BCC = A XOR C
+ * 
+ * 
+ * TIMEOUT & RETRY MECHANISM (Transmitter only)
+ * ---------------------------------------------
+ * 
+ * Attempt 1:
+ *   Send DISC → Wait 3s → Timeout → Retry
+ * 
+ * Attempt 2:
+ *   Send DISC → Wait 3s → Timeout → Retry
+ * 
+ * Attempt 3:
+ *   Send DISC → Wait 3s → Timeout → FAIL
+ * 
+ * 
+ * ERROR SCENARIOS
+ * ---------------
+ * 
+ * 1. Receiver doesn't respond to initial DISC:
+ *    - Tx retransmits up to maxRetries times
+ *    - If still no response, returns error
+ * 
+ * 2. Transmitter doesn't send initial DISC:
+ *    - Rx waits for timeout period
+ *    - Returns error if timeout expires
+ * 
+ * 3. UA gets lost after Rx sends DISC:
+ *    - Rx waits for timeout period
+ *    - Returns error if no UA received
+ * 
+ * 4. Corrupted frame (wrong BCC):
+ *    - State machine resets to initial state
+ *    - Waits for next valid frame
+ * 
+ */
+
+// Frame definitions for reference
+#define FLAG 0x7E
+
+// DISC frame - Transmitter to Receiver
+// FLAG | 0x03 | 0x0B | 0x08 | FLAG
+
+// DISC frame - Receiver to Transmitter  
+// FLAG | 0x01 | 0x0B | 0x0A | FLAG
+
+// UA frame - After disconnect handshake
+// FLAG | 0x01 | 0x07 | 0x06 | FLAG
+
+// State machine states for frame reception:
+// State 0: Waiting for FLAG (0x7E)
+// State 1: Waiting for Address field (A)
+// State 2: Waiting for Control field (C)
+// State 3: Waiting for BCC (A XOR C)
+// State 4: Waiting for final FLAG (0x7E)

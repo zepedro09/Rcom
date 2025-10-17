@@ -1,0 +1,159 @@
+╔════════════════════════════════════════════════════════════════╗
+║                  LLCLOSE() QUICK REFERENCE                      ║
+╚════════════════════════════════════════════════════════════════╝
+
+┌──────────────────────────────────────────────────────────────┐
+│ FRAME FORMATS                                                 │
+└──────────────────────────────────────────────────────────────┘
+
+  DISC (Tx → Rx)
+  ┌──────┬──────┬──────┬──────┬──────┐
+  │ 0x7E │ 0x03 │ 0x0B │ 0x08 │ 0x7E │
+  └──────┴──────┴──────┴──────┴──────┘
+   FLAG    A      C      BCC    FLAG
+
+  DISC (Rx → Tx)
+  ┌──────┬──────┬──────┬──────┬──────┐
+  │ 0x7E │ 0x01 │ 0x0B │ 0x0A │ 0x7E │
+  └──────┴──────┴──────┴──────┴──────┘
+   FLAG    A      C      BCC    FLAG
+
+  UA (Tx → Rx after receiving DISC)
+  ┌──────┬──────┬──────┬──────┬──────┐
+  │ 0x7E │ 0x01 │ 0x07 │ 0x06 │ 0x7E │
+  └──────┴──────┴──────┴──────┴──────┘
+   FLAG    A      C      BCC    FLAG
+
+┌──────────────────────────────────────────────────────────────┐
+│ BCC CALCULATION                                               │
+└──────────────────────────────────────────────────────────────┘
+
+  BCC = A XOR C
+
+  Examples:
+    0x03 XOR 0x0B = 0x08  (Tx DISC)
+    0x01 XOR 0x0B = 0x0A  (Rx DISC)
+    0x01 XOR 0x07 = 0x06  (UA)
+
+┌──────────────────────────────────────────────────────────────┐
+│ CONTROL FIELD VALUES                                          │
+└──────────────────────────────────────────────────────────────┘
+
+  C = 0x03 → SET (connection setup)
+  C = 0x07 → UA  (unnumbered acknowledgment)
+  C = 0x0B → DISC (disconnect)
+
+┌──────────────────────────────────────────────────────────────┐
+│ ADDRESS FIELD VALUES                                          │
+└──────────────────────────────────────────────────────────────┘
+
+  A = 0x01 → Commands sent by Receiver
+             Responses sent to Transmitter
+  
+  A = 0x03 → Commands sent by Transmitter
+             Responses sent to Receiver
+
+┌──────────────────────────────────────────────────────────────┐
+│ SEQUENCE SUMMARY                                              │
+└──────────────────────────────────────────────────────────────┘
+
+  TRANSMITTER                      RECEIVER
+  ───────────                      ────────
+       │                               │
+       │──── DISC (A=0x03) ──────────→│
+       │                               │
+       │←──── DISC (A=0x01) ──────────│
+       │                               │
+       │──── UA (A=0x01) ────────────→│
+       │                               │
+    [CLOSE]                         [CLOSE]
+
+┌──────────────────────────────────────────────────────────────┐
+│ FUNCTION ROLES                                                │
+└──────────────────────────────────────────────────────────────┘
+
+  llclose()
+    └─→ Determines role (Tx or Rx)
+        │
+        ├─→ If Tx: txDisconnect()
+        │     └─→ Send DISC
+        │     └─→ Wait for DISC (with retries)
+        │     └─→ Send UA
+        │
+        └─→ If Rx: rxDisconnect()
+              └─→ Wait for DISC
+              └─→ Send DISC
+              └─→ Wait for UA
+
+┌──────────────────────────────────────────────────────────────┐
+│ STATE MACHINE STATES                                          │
+└──────────────────────────────────────────────────────────────┘
+
+  State 0: Wait for FLAG (0x7E)
+  State 1: Wait for Address (A)
+  State 2: Wait for Control (C)
+  State 3: Wait for BCC (A XOR C)
+  State 4: Wait for final FLAG (0x7E) → COMPLETE
+
+┌──────────────────────────────────────────────────────────────┐
+│ TIMEOUT & RETRIES (Transmitter)                               │
+└──────────────────────────────────────────────────────────────┘
+
+  Default timeout: 3 seconds
+  Max retries: 3 attempts
+
+  Attempt 1 → [3s timeout] → Attempt 2 → [3s timeout] → 
+  Attempt 3 → [3s timeout] → FAIL
+
+┌──────────────────────────────────────────────────────────────┐
+│ RETURN VALUES                                                 │
+└──────────────────────────────────────────────────────────────┘
+
+  llclose() returns:
+    0  → Success (connection closed properly)
+   -1  → Error (timeout, bad frame, or I/O error)
+
+┌──────────────────────────────────────────────────────────────┐
+│ KEY VARIABLES                                                 │
+└──────────────────────────────────────────────────────────────┘
+
+  connectionParams → Stores role, timeout, nRetransmissions
+  alarmEnabled     → TRUE when alarm is active
+  alarmCount       → Number of alarms received
+  
+┌──────────────────────────────────────────────────────────────┐
+│ DEBUGGING TIPS                                                │
+└──────────────────────────────────────────────────────────────┘
+
+  1. Print each byte: printf("0x%02X ", byte);
+  2. Print state transitions
+  3. Verify BCC: printf("BCC: 0x%02X", A ^ C);
+  4. Check alarm firing
+  5. Monitor serial port with external tool
+
+┌──────────────────────────────────────────────────────────────┐
+│ COMMON MISTAKES                                               │
+└──────────────────────────────────────────────────────────────┘
+
+  ✗ Wrong address field in DISC/UA
+  ✗ Incorrect BCC calculation
+  ✗ Forgetting to reset state machine on FLAG
+  ✗ Not handling timeout properly
+  ✗ Closing serial port twice
+  ✗ State variable inside loop (should be static or outside)
+
+┌──────────────────────────────────────────────────────────────┐
+│ FILES MODIFIED                                                │
+└──────────────────────────────────────────────────────────────┘
+
+  src/link_layer.c
+    - Added: connectionParams (global)
+    - Modified: llopen() (stores parameters)
+    - Implemented: llclose()
+    - Added: txDisconnect()
+    - Added: rxDisconnect()
+    - Added: receiveDISC()
+
+╔════════════════════════════════════════════════════════════════╗
+║  For full documentation, see: LLCLOSE_IMPLEMENTATION.md        ║
+╚════════════════════════════════════════════════════════════════╝

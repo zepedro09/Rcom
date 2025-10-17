@@ -14,12 +14,18 @@ volatile int alarmCount = 0;
 volatile int uaReceived = FALSE;
 volatile int STOP = FALSE;
 
+// Store connection parameters for llclose()
+static LinkLayer connectionParams;
+
 
 ////////////////////////////////////////////////
 // LLOPEN
 ////////////////////////////////////////////////
 int llopen(LinkLayer connectionParameters)
 {
+    // Store connection parameters for later use in llclose()
+    connectionParams = connectionParameters;
+    
     if (openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate) == -1) 
         return -1;
 
@@ -59,7 +65,295 @@ int llread(unsigned char *packet)
 ////////////////////////////////////////////////
 int llclose()
 {
-    // TODO: Implement this function
+    int result;
+
+    if (connectionParams.role == LlTx)
+    {
+        // Transmitter: Send DISC, wait for DISC, send UA
+        result = txDisconnect(connectionParams.timeout, connectionParams.nRetransmissions);
+    }
+    else if (connectionParams.role == LlRx)
+    {
+        // Receiver: Wait for DISC, send DISC, wait for UA
+        result = rxDisconnect(connectionParams.timeout);
+    }
+    else
+    {
+        printf("Error: Invalid role\n");
+        return -1;
+    }
+
+    if (result == -1)
+    {
+        printf("Error during disconnect sequence\n");
+        closeSerialPort();
+        return -1;
+    }
+
+    // Close the serial port
+    if (closeSerialPort() < 0)
+    {
+        perror("Error closing serial port");
+        return -1;
+    }
+
+    printf("Connection closed successfully\n");
+    return 0;
+}
+
+// Helper function to receive DISC frame from peer
+// For Tx: expects DISC with A=0x01, C=0x0B (from Rx)
+// For Rx: expects DISC with A=0x03, C=0x0B (from Tx)
+int receiveDISC(unsigned char expectedA)
+{
+    unsigned char byte;
+    static int state = 0;
+
+    const unsigned char FLAG = 0x7E;
+    const unsigned char C = 0x0B; // DISC control field
+    const unsigned char BCC = expectedA ^ C;
+
+    int res = readByteSerialPort(&byte);
+    if (res <= 0)
+        return FALSE;
+
+    switch (state)
+    {
+    case 0:
+        if (byte == FLAG) state = 1;
+        break;
+    case 1:
+        if (byte == expectedA) state = 2;
+        else if (byte != FLAG) state = 0;
+        break;
+    case 2:
+        if (byte == C) state = 3;
+        else if (byte == FLAG) state = 1;
+        else state = 0;
+        break;
+    case 3:
+        if (byte == BCC) state = 4;
+        else if (byte == FLAG) state = 1;
+        else state = 0;
+        break;
+    case 4:
+        if (byte == FLAG)
+        {
+            printf("DISC frame received!\n");
+            state = 0;
+            return TRUE;
+        }
+        else state = 0;
+        break;
+    default:
+        state = 0;
+        break;
+    }
+
+    return FALSE;
+}
+
+// Transmitter side: Send DISC and wait for DISC response, then send UA
+int txDisconnect(int timeoutSeconds, int maxRetries)
+{
+    unsigned char DISC_frame[5];
+    const unsigned char FLAG = 0x7E;
+    const unsigned char A_TX = 0x03; // Transmitter sends with A=0x03
+    const unsigned char C_DISC = 0x0B;
+    const unsigned char BCC = A_TX ^ C_DISC;
+
+    DISC_frame[0] = FLAG;
+    DISC_frame[1] = A_TX;
+    DISC_frame[2] = C_DISC;
+    DISC_frame[3] = BCC;
+    DISC_frame[4] = FLAG;
+
+    // Setup alarm handler
+    struct sigaction act = {0};
+    act.sa_handler = &alarmHandler;
+    if (sigaction(SIGALRM, &act, NULL) == -1)
+    {
+        perror("sigaction");
+        return -1;
+    }
+
+    int retries = 0;
+    int discReceived = FALSE;
+
+    printf("Transmitter: Sending DISC frame...\n");
+
+    while (retries < maxRetries && !discReceived)
+    {
+        retries++;
+        
+        // Send DISC frame
+        int bytes = writeBytesSerialPort(DISC_frame, sizeof(DISC_frame));
+        if (bytes < 0)
+        {
+            perror("Error sending DISC frame");
+            return -1;
+        }
+        printf("DISC frame sent (%d bytes)\n", bytes);
+        
+        alarmEnabled = TRUE;
+        alarm(timeoutSeconds);
+        
+        // Wait for DISC response from Receiver (A=0x01, C=0x0B)
+        while (alarmEnabled && !discReceived)
+        {
+            discReceived = receiveDISC(0x01); // Expecting A=0x01 from Receiver
+        }
+        
+        if (!discReceived && !alarmEnabled)
+            printf("Timeout #%d - retransmitting DISC frame...\n", retries);
+    }
+
+    if (!discReceived)
+    {
+        printf("Failed to receive DISC response after %d attempts\n", maxRetries);
+        return -1;
+    }
+
+    alarm(0); // Cancel alarm
+    alarmEnabled = FALSE;
+
+    // Send UA frame (A=0x01, C=0x07)
+    unsigned char UA_frame[5];
+    const unsigned char A_UA = 0x01;
+    const unsigned char C_UA = 0x07;
+    const unsigned char BCC_UA = A_UA ^ C_UA;
+
+    UA_frame[0] = FLAG;
+    UA_frame[1] = A_UA;
+    UA_frame[2] = C_UA;
+    UA_frame[3] = BCC_UA;
+    UA_frame[4] = FLAG;
+
+    int bytes = writeBytesSerialPort(UA_frame, sizeof(UA_frame));
+    if (bytes < 0)
+    {
+        perror("Error sending UA frame");
+        return -1;
+    }
+    printf("Transmitter: UA frame sent (%d bytes)\n", bytes);
+
+    return 0;
+}
+
+// Receiver side: Wait for DISC, send DISC response, then wait for UA
+int rxDisconnect(int timeoutSeconds)
+{
+    const unsigned char FLAG = 0x7E;
+    
+    // Setup alarm handler
+    struct sigaction act = {0};
+    act.sa_handler = &alarmHandler;
+    if (sigaction(SIGALRM, &act, NULL) == -1)
+    {
+        perror("sigaction");
+        return -1;
+    }
+
+    printf("Receiver: Waiting for DISC frame...\n");
+
+    // Wait for DISC from Transmitter (A=0x03, C=0x0B)
+    alarmEnabled = TRUE;
+    alarm(timeoutSeconds);
+    
+    int discReceived = FALSE;
+    while (alarmEnabled && !discReceived)
+    {
+        discReceived = receiveDISC(0x03); // Expecting A=0x03 from Transmitter
+    }
+
+    if (!discReceived)
+    {
+        printf("Timeout: Failed to receive DISC frame from Transmitter\n");
+        return -1;
+    }
+
+    alarm(0); // Cancel alarm
+
+    // Send DISC response (A=0x01, C=0x0B)
+    unsigned char DISC_frame[5];
+    const unsigned char A_RX = 0x01;
+    const unsigned char C_DISC = 0x0B;
+    const unsigned char BCC = A_RX ^ C_DISC;
+
+    DISC_frame[0] = FLAG;
+    DISC_frame[1] = A_RX;
+    DISC_frame[2] = C_DISC;
+    DISC_frame[3] = BCC;
+    DISC_frame[4] = FLAG;
+
+    int bytes = writeBytesSerialPort(DISC_frame, sizeof(DISC_frame));
+    if (bytes < 0)
+    {
+        perror("Error sending DISC frame");
+        return -1;
+    }
+    printf("Receiver: DISC frame sent (%d bytes)\n", bytes);
+
+    // Wait for UA from Transmitter (A=0x03, C=0x07)
+    printf("Receiver: Waiting for UA frame...\n");
+    
+    alarmEnabled = TRUE;
+    alarm(timeoutSeconds);
+    
+    int uaReceived = FALSE;
+    int state = 0;
+    const unsigned char A_UA = 0x03;
+    const unsigned char C_UA = 0x07;
+    const unsigned char BCC_UA = A_UA ^ C_UA;
+    
+    while (alarmEnabled && !uaReceived)
+    {
+        unsigned char byte;
+
+        int res = readByteSerialPort(&byte);
+        if (res <= 0)
+            continue;
+
+        switch (state)
+        {
+        case 0:
+            if (byte == FLAG) state = 1;
+            break;
+        case 1:
+            if (byte == A_UA) state = 2;
+            else if (byte != FLAG) state = 0;
+            break;
+        case 2:
+            if (byte == C_UA) state = 3;
+            else if (byte == FLAG) state = 1;
+            else state = 0;
+            break;
+        case 3:
+            if (byte == BCC_UA) state = 4;
+            else if (byte == FLAG) state = 1;
+            else state = 0;
+            break;
+        case 4:
+            if (byte == FLAG)
+            {
+                printf("Receiver: UA frame received!\n");
+                uaReceived = TRUE;
+            }
+            else state = 0;
+            break;
+        default:
+            state = 0;
+            break;
+        }
+    }
+
+    alarm(0);
+
+    if (!uaReceived)
+    {
+        printf("Timeout: Failed to receive UA frame from Transmitter\n");
+        return -1;
+    }
 
     return 0;
 }
