@@ -17,7 +17,10 @@ volatile int alarmEnabled = FALSE;
 volatile int alarmCount = 0;
 volatile int uaReceived = FALSE;
 volatile int STOP = FALSE;
-volatile int C_DISC = 0x0B;
+
+// Forward declarations for internal helpers
+int waitForSupervisionFrame(LinkLayerRole role, unsigned char expectedC, int timeoutSeconds, int maxRetries);
+
 
 
 ////////////////////////////////////////////////
@@ -33,7 +36,10 @@ int llopen(LinkLayer connectionParameters)
         if (sendFrameAndWaitForResponse(LlTx, C_SET, C_UA, connectionParameters.timeout, connectionParameters.nRetransmissions, TRUE) == -1)
             return -1;
     } else if (connectionParameters.role == LlRx) {
-        if (waitForSetsendUA(connectionParameters.timeout) == -1)
+        // Receiver: wait for SET, then send UA (send-only)
+        if (waitForSupervisionFrame(LlRx, C_SET, connectionParameters.timeout, connectionParameters.nRetransmissions) == -1)
+            return -1;
+        if (sendFrameAndWaitForResponse(LlRx, C_UA, 0, 0, 0, FALSE) == -1)
             return -1;
     }
 
@@ -93,61 +99,8 @@ int llclose(LinkLayer connectionParameters)
         // Receiver: Wait for DISC, send DISC response, wait for UA
         printf("Receiver: Waiting for disconnect...\n");
         
-        // Step 1: Wait for DISC (receive only - need custom approach)
-        struct sigaction act = {0};
-        act.sa_handler = &alarmHandler;
-        if (sigaction(SIGALRM, &act, NULL) == -1) {
-            perror("sigaction");
-            closeSerialPort();
-            return -1;
-        }
-        
-        alarmEnabled = TRUE;
-        alarm(connectionParameters.timeout);
-        
-        int discReceived = FALSE;
-        int state = 0;
-        
-        printf("Receiver: Waiting for DISC frame...\n");
-        
-        while (alarmEnabled && !discReceived) {
-            unsigned char byte;
-            int res = readByteSerialPort(&byte);
-            if (res <= 0) continue;
-            
-            switch (state) {
-            case 0:
-                if (byte == FLAG) state = 1;
-                break;
-            case 1:
-                if (byte == A_T) state = 2;
-                else if (byte != FLAG) state = 0;
-                break;
-            case 2:
-                if (byte == C_DISC) state = 3;
-                else if (byte == FLAG) state = 1;
-                else state = 0;
-                break;
-            case 3:
-                if (byte == BCC1(A_T, C_DISC)) state = 4;
-                else if (byte == FLAG) state = 1;
-                else state = 0;
-                break;
-            case 4:
-                if (byte == FLAG) {
-                    discReceived = TRUE;
-                    alarm(0);
-                    alarmEnabled = FALSE;
-                    printf("DISC frame received from transmitter\n");
-                } else state = 0;
-                break;
-            default:
-                state = 0;
-                break;
-            }
-        }
-        
-        if (!discReceived) {
+        // Step 1: Wait for DISC (receive-only helper)
+        if (waitForSupervisionFrame(LlRx, C_DISC, connectionParameters.timeout, connectionParameters.nRetransmissions) == -1) {
             printf("Timeout: Failed to receive DISC frame\n");
             closeSerialPort();
             return -1;
@@ -224,73 +177,13 @@ void alarmHandler(int signal)
     printf("Alarm #%d received\n", alarmCount);
 }
 
-int sendSetAndWaitForUa(int timeoutSeconds, int maxRetries) {
-    unsigned char SET_frame[5];
+// Waits for a valid supervision/unnumbered frame with a specific control field
+// Uses a timeout and retry mechanism similar to the send-and-wait helper
+int waitForSupervisionFrame(LinkLayerRole role, unsigned char expectedC, int timeoutSeconds, int maxRetries)
+{
+    unsigned char expectedA = (role == LlRx) ? A_T : A_R;
 
-        SET_frame[0] = FLAG;
-        SET_frame[1] = A_T;
-        SET_frame[2] = C_SET;
-        SET_frame[3] = BCC1(A_T, C_SET);
-        SET_frame[4] = FLAG;
-        
-        struct sigaction act = {0};
-        act.sa_handler = &alarmHandler;
-        if (sigaction(SIGALRM, &act, NULL) == -1)
-        {
-            perror("sigaction");
-            exit(1);
-        }
-
-        printf("Alarm configured\n");
-
-        
-        int retries = 0;
-
-        while (retries < maxRetries && !uaReceived)
-        {
-            retries++;
-            
-            int bytes = writeBytesSerialPort(SET_frame, sizeof(SET_frame));
-            printf("%d bytes written to serial port\n", bytes);
-            alarmEnabled = TRUE;
-            alarm(timeoutSeconds);
-            while (alarmEnabled && !uaReceived)
-            {
-                uaReceived = receiveUA();
-            }
-            if (!uaReceived && !alarmEnabled)
-            printf("Timeout #%d - retransmitting SET frame...\n", retries);
-
-        
-        }
-        if (uaReceived)
-        {
-            printf("UA frame successfully received!\n");
-            alarm(0);
-            alarmEnabled = FALSE;
-            return 0;
-        }
-        else{
-            printf("Failed to receive UA frame after 3 attempts\n");
-            return -1;
-        }
-
-        // Wait until all bytes have been written to the serial port
-        sleep(1);
-}
-
-int waitForSetsendUA(int timeoutSeconds) {
-    unsigned char UA[5];
-
-    UA[0] = FLAG;
-    UA[1] = A_R;
-    UA[2] = C_UA;
-    UA[3] = BCC1(A_R, C_UA);
-    UA[4] = FLAG;
-
-    int state = 0;
-
-    // Setup alarm signal handler
+    // Setup alarm handler
     struct sigaction act = {0};
     act.sa_handler = &alarmHandler;
     if (sigaction(SIGALRM, &act, NULL) == -1) {
@@ -298,68 +191,68 @@ int waitForSetsendUA(int timeoutSeconds) {
         return -1;
     }
 
-    // Start alarm
-    alarmEnabled = 1;
-    alarm(timeoutSeconds);
+    int retries = 0;
+    int frameReceived = FALSE;
 
-    while (alarmEnabled) {
-        unsigned char byte;
-        int bytes = readByteSerialPort(&byte);
-        if (bytes < 0) {
-            perror("Error reading from serial port");
-            return -1;
-        }
-        if (bytes == 0) {
-            // No data available; just continue waiting
-            continue;
-        }
+    printf("Waiting for frame (A=0x%02X, C=0x%02X)...\n", expectedA, expectedC);
 
-        printf("Byte received: 0x%02X\n", byte);
+    while (retries < maxRetries && !frameReceived)
+    {
+        retries++;
+        alarmEnabled = TRUE;
+        alarm(timeoutSeconds);
 
-        switch (state) {
-            case 0:
+        int state = 0;
+        unsigned char receivedA = 0, receivedC = 0, receivedBCC = 0;
+        
+        while (alarmEnabled && !frameReceived)
+        {
+            unsigned char byte;
+            int res = readByteSerialPort(&byte);
+            if (res <= 0) continue;
+
+            switch (state)
+            {
+            case 0: // FLAG
                 if (byte == FLAG) state = 1;
                 break;
-            case 1:
-                if (byte == A_T) state = 2;
-                else if (byte == FLAG) state = 1;
-                else state = 0;
+            case 1: // A
+                if (byte == expectedA) { receivedA = byte; state = 2; }
+                else if (byte != FLAG) state = 0;
                 break;
-            case 2:
-                if (byte == C_SET) state = 3;
-                else if (byte == FLAG) state = 1;
-                else state = 0;
+            case 2: // C
+                if (byte == expectedC) { receivedC = byte; state = 3; }
+                else if (byte == FLAG) state = 1; else state = 0;
                 break;
-            case 3:
-                if (byte == BCC1(A_T, C_SET)) state = 4;
-                else if (byte == FLAG) state = 1;
-                else state = 0;
+            case 3: // BCC1
+                receivedBCC = byte;
+                if (receivedBCC == BCC1(receivedA, receivedC)) state = 4;
+                else if (byte == FLAG) state = 1; else state = 0;
                 break;
-            case 4:
+            case 4: // closing FLAG
                 if (byte == FLAG) {
-                    int send = writeBytesSerialPort(UA, sizeof(UA));
-                    if (send < 0) {
-                        perror("Error sending UA frame");
-                        return -1;
-                    }
-                    printf("Sent UA frame.\n");
-                    alarm(0);        // Cancel the alarm
-                    alarmEnabled = 0; // Stop the loop
-                    return 0;
-                } else {
-                    state = 0;
-                }
+                    printf("Expected frame received (A=0x%02X, C=0x%02X).\n", receivedA, receivedC);
+                    frameReceived = TRUE;
+                    alarm(0);
+                    alarmEnabled = FALSE;
+                } else state = 0;
                 break;
             default:
                 state = 0;
                 break;
+            }
+        }
+
+        if (!frameReceived && !alarmEnabled) {
+            printf("Timeout #%d - still waiting for expected frame...\n", retries);
         }
     }
 
-    // Timeout reached without receiving SET frame properly
-    printf("Timeout reached while waiting for SET frame.\n");
-    return -1;
+    return frameReceived ? 0 : -1;
 }
+
+
+// Removed waitForSetsendUA in favor of generic waitForSupervisionFrame + send-only UA
 
 
 /**
