@@ -18,22 +18,19 @@
 // Control field values - Supervisory frames (R = N(r) bit)
 #define C_RR_0  0x05  // 00000101 - Receiver Ready, N(r) = 0
 #define C_RR_1  0x85  // 10000101 - Receiver Ready, N(r) = 1
-#define C_REJ_0 0x01  // 00000001 - Reject, N(r) = 0
-#define C_REJ_1 0x81  // 10000001 - Reject, N(r) = 1
+#define C_REJ_0 0x01  +
+#define C_REJ_1 0x81 
 
-// Control field values - Information frames
-#define C_I_0   0x00  // 00000000 - Information frame, N(s) = 0
-#define C_I_1   0x80  // 10000000 - Information frame, N(s) = 1
 
-// Escape sequence for byte stuffing
-#define ESC      0x7D  // 01111101 - Escape character
-#define ESC_FLAG 0x5E  // 01011110 - FLAG XOR 0x20 (stuffed FLAG)
-#define ESC_ESC  0x5D  // 01011101 - ESC XOR 0x20 (stuffed ESC)
+#define C_I_0   0x00  
+#define C_I_1   0x80  
 
-// Helper macro to calculate BCC1 (XOR of A and C fields)
+#define ESC      0x7D  
+#define ESC_FLAG 0x5E  
+#define ESC_ESC  0x5D  
+
 #define BCC1(a, c) ((a) ^ (c))
 
-// Helper macro to calculate BCC2 (XOR of all data bytes)
-// Note: This should be implemented as a function for actual data
+
 
 #endif // _UTILS_H_

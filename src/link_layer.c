@@ -66,9 +66,15 @@ int llopen(LinkLayer connectionParameters)
 ////////////////////////////////////////////////
 // LLWRITE
 ////////////////////////////////////////////////
-int llwrite(const unsigned char *buf, int bufSize)
+int llwrite(const unsigned char *buf, int bufSize, LinkLayer connectionParameters)
 {
-    // TODO: Implement this function
+
+    if (connectionParameters.role == LlTx) {
+        sendIframe()
+    } else if (connectionParameters.role == LlRx) {
+        //Send RR or REJ
+       
+    }
 
     return 0;
 }
@@ -76,7 +82,7 @@ int llwrite(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 // LLREAD
 ////////////////////////////////////////////////
-int llread(unsigned char *packet)
+int llread(unsigned char *packet, LinkLayer connectionParameters)
 {
     // TODO: Implement this function
 
@@ -295,3 +301,106 @@ int waitForSupervisionFrame(LinkLayerRole role, unsigned char expectedC, int tim
     printf("Timeout - no frame received\n");
     return -1; // Timeout
 }
+
+
+int sendIFrame(unsigned char *data, int datasize, int seqNumber){
+
+    unsigned char tmp[datasize + 1];
+    memcpy(tmp, data, datasize);
+    tmp[datasize] = (unsigned char) createBCC2(data, datasize);
+
+    int max_stuffed = 2 * (datasize + 1) + 1;
+    unsigned char *stuffed = malloc(max_stuffed);
+    if (!stuffed) return -1;
+
+    int stuffedsize = stuffBytes(tmp, datasize + 1, stuffed);
+    int frame_size = stuffedsize + 5;
+    int controlField;
+
+    if(seqNumber == 0) controlField = C_I_0;
+    else controlField = C_I_1;
+
+    unsigned char frame[frame_size];
+
+    frame[0] = FLAG;
+    frame[1] = A_T;
+    frame[2] = controlField;
+    frame[3] = BCC1(A_T, controlField);
+    memcpy(&frame[4], stuffed, stuffedsize);
+    frame[frame_size - 1] = FLAG;
+
+}
+
+int createBCC2 (const unsigned char *data, int dataSize){
+    int bcc2 = 0x00;
+
+    for(int i =0; i < dataSize; i++){
+        bcc2 ^= data[i];
+    }
+
+    return bcc2;
+}
+
+
+int replaceByte(unsigned char byte, unsigned char *res){
+    if(!res) return -1;
+
+    if(byte == FLAG){
+        res[0] = ESC;
+        res[1] = ESC_FLAG;
+        return 2;
+    }
+    else if(byte == ESC){
+        res[0] = ESC;
+        res[1] = ESC_ESC;
+        return 2;
+    }
+    else{
+        res[0] = byte;
+        return 1;
+    }
+    
+    
+}
+
+
+int stuffBytes(unsigned char *data, int dataSize, unsigned char *dest){
+    int max_size = 2 * dataSize + 1;
+
+    if (!data || !dest || dataSize < 0) return -1;
+
+    int dest_size = 0;
+    for(int i =0; i < dataSize; i++){
+        unsigned char temp = data[i];
+        int size_added = replaceByte(temp, &dest[dest_size]);
+
+        if(size_added == -1) return -1;
+        if(dest_size + size_added > max_size) return -1;
+
+        dest_size += size_added;
+        
+    }
+    return dest_size;
+}
+
+int destuffBytes(unsigned char *data, int dataSize, unsigned char *dest){
+    int min_size = dataSize/2 -1;
+
+    if (!data || !dest || dataSize < 0) return -1;
+
+    int dest_size = 0;
+
+    for(int i =0; i < dataSize; i++){
+        if(data[i] == ESC){
+            if (i + 1 >= dataSize) return -1;
+            if(data[i + 1] == ESC_FLAG) dest[dest_size++] = FLAG;
+            else if(data[i + 1] == ESC_ESC) dest[dest_size++] = ESC;
+            else return -1; 
+            i++;
+        }
+        else dest[dest_size++] = data[i];
+    }
+    return dest_size;
+
+}
+
