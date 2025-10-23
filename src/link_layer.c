@@ -195,9 +195,11 @@ int sendAndWaitResponse(LinkLayer connectionParameters, unsigned char commandC, 
         }
         
         // 2. Wait for response (single attempt - no nested retries!)
-        // Note: When Tx sends a command, it expects reply from Rx (wait as LlTx expects A=A_R)
-        //       When Rx sends a command, it expects reply from Tx (wait as LlRx expects A=A_T)
-        if (waitForSupervisionFrame(connectionParameters.role, expectedReplyC, connectionParameters.timeout) == 0) {
+        // Determine the role of the *responder* (opposite of sender)
+        LinkLayerRole responderRole = (connectionParameters.role == LlTx) ? LlRx : LlTx;
+        // Note: when we wait we must use the responder's role so the expected A field
+        // is computed correctly inside waitForSupervisionFrame.
+        if (waitForSupervisionFrame(responderRole, expectedReplyC, connectionParameters.timeout) == 0) {
             printf("Response received successfully!\n");
             return 0; // Success!
         }
@@ -218,7 +220,20 @@ int sendAndWaitResponse(LinkLayer connectionParameters, unsigned char commandC, 
  */
 int waitForSupervisionFrame(LinkLayerRole role, unsigned char expectedC, int timeoutSeconds)
 {
-    unsigned char expectedA = (role == LlRx) ? A_T : A_R;
+    unsigned char expectedA;
+
+    // Determine expected A depending on what control field we're waiting for.
+    // SET is a command sent by Tx and uses A_T. UA is a reply sent by Rx and uses A_T.
+    // DISC is a special case: when Rx waits for DISC (role == LlRx) it expects a DISC from Tx (A_T),
+    // while when Tx waits for DISC (role == LlTx) it expects a DISC from Rx (A_R).
+    if (expectedC == C_SET || expectedC == C_UA) {
+        expectedA = A_T;
+    } else if (expectedC == C_DISC) {
+        expectedA = (role == LlRx) ? A_T : A_R;
+    } else {
+        // Default: assume A_T for now (will be refined for RR/REJ/I frames later)
+        expectedA = A_T;
+    }
 
     // Setup alarm handler
     struct sigaction act = {0};
