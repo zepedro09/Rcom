@@ -67,7 +67,7 @@ int llwrite(const unsigned char *buf, int bufSize, LinkLayer connectionParameter
 {
 
     if (connectionParameters.role == LlTx) {
-        sendIframe()
+        sendIframe();
     } else if (connectionParameters.role == LlRx) {
         //Send RR or REJ
        
@@ -81,7 +81,13 @@ int llwrite(const unsigned char *buf, int bufSize, LinkLayer connectionParameter
 ////////////////////////////////////////////////
 int llread(unsigned char *packet, LinkLayer connectionParameters)
 {
-    // TODO: Implement this function
+    if (connectionParameters.role == LlTx) {
+        sendIframe();
+    } else if (connectionParameters.role == LlRx) {
+    
+       
+    }
+
 
     return 0;
 }
@@ -220,7 +226,7 @@ int waitForSupervisionFrame(LinkLayerRole role, unsigned char expectedC, int tim
 
         switch (state)
         {
-        case 0: // FLAG
+        case 0: // Flag
             if (byte == FLAG) state = 1;
             break;
         case 1: // A
@@ -238,7 +244,7 @@ int waitForSupervisionFrame(LinkLayerRole role, unsigned char expectedC, int tim
             else if (byte == FLAG) state = 1; 
             else state = 0;
             break;
-        case 4: 
+        case 4: //Flag
             if (byte == FLAG) {
                 printf("Frame received (A=0x%02X, C=0x%02X)\n", receivedA, receivedC);
                 alarm(0);
@@ -272,8 +278,7 @@ int sendIFrame(unsigned char *data, int datasize, int seqNumber){
     int frame_size = stuffedsize + 5;
     int controlField;
 
-    if(seqNumber == 0) controlField = C_I_0;
-    else controlField = C_I_1;
+    controlField = (seqNumber == 0) ? C_I_0 : C_I_1;
 
     unsigned char frame[frame_size];
 
@@ -284,6 +289,106 @@ int sendIFrame(unsigned char *data, int datasize, int seqNumber){
     memcpy(&frame[4], stuffed, stuffedsize);
     frame[frame_size - 1] = FLAG;
 
+    int bytes = writeBytesSerialPort(frame, sizeof(frame));
+
+    if (bytes < 0) {
+        perror("Error sending frame");
+        return -1;
+    }
+    
+    printf("Frame sent: A=0x%02X, C=0x%02X (%d bytes)\n", sendA, controlField, bytes);
+    return 0;
+
+
+}
+
+
+int recieveIFrame(LinkLayerRole role, int timeoutSeconds, unsigned char *dest, int destSize, int seqNumber)
+{
+    unsigned char expectedA, expectedC;
+    expectedA =  A_T;
+    expectedC = (seqNumber == 0) ? C_I_0 : C_I_1;
+
+    struct sigaction act = {0};
+    act.sa_handler = &alarmHandler;
+    if (sigaction(SIGALRM, &act, NULL) == -1) {
+        perror("sigaction");
+        return -1;
+    }
+
+    alarmEnabled = TRUE;
+    alarm(timeoutSeconds);
+
+    int state = 0;
+    unsigned char receivedA = 0, receivedC = 0, receivedBCC = 0;
+
+    int tmpSize = destSize * 2 + 16;
+    unsigned char *tmp = malloc(tmpSize);
+    int tmpLen = 0;
+    
+    
+    printf("Waiting for frame (A=0x%02X, C=0x%02X) with %ds timeout...\n", expectedA, expectedC, timeoutSeconds);
+    
+    while (alarmEnabled)
+    {
+        unsigned char byte;
+        int res = readByteSerialPort(&byte);
+        if (res <= 0) continue;
+
+        switch (state)
+        {
+        case 0: // Flag
+            if (byte == FLAG) state = 1;
+            break;
+        case 1: // A
+            if (byte == expectedA) { receivedA = byte; state = 2; }
+            else if (byte != FLAG) state = 0;
+            break;
+        case 2: // C
+            if (byte == expectedC) {
+                receivedC = byte;
+                state = 3; 
+                }
+            else if (byte == FLAG) state = 1; 
+            else state = 0;
+            break;
+        case 3: // BCC1
+            receivedBCC = byte;
+            if (receivedBCC == BCC1(receivedA, receivedC)) state = 4;
+            else if (byte == FLAG) state = 1; 
+            else state = 0;
+            break;
+        case 4: //Flag, D and BCC2
+            if (byte == FLAG) {
+                destSize = destuffBytes(tmp, tmpLen, dest);
+                free(tmp);
+                int bcc2 = createBCC2(dest, destSize -1);
+                if(bcc2 != dest[destSize -1]){
+                    printf("BCC2 error\n");
+                    return -2;
+                }
+
+                alarm(0);
+                alarmEnabled = FALSE;
+                return seqNumber;
+            }
+            else{
+                if(tmpLen + 1 > tmp){
+                    free(tmp);
+                    printf("Temporary buffer overflow\n");
+                    return -1;
+                }
+                tmp[tmpLen++] = byte;
+            }
+            break;
+        default:
+            state = 0;
+            break;
+        }
+    }
+
+    printf("Timeout - no frame received\n");
+    return -1; 
 }
 
 int createBCC2 (const unsigned char *data, int dataSize){

@@ -11,10 +11,10 @@
 #define C_DISC  0x0B 
 #define C_UA    0x07 
 
-#define C_RR_0  0x05  
-#define C_RR_1  0x85  
-#define C_REJ_0 0x01  
-#define C_REJ_1 0x81 
+#define C_RR_0  0xAA  
+#define C_RR_1  0xAB  
+#define C_REJ_0 0x54  
+#define C_REJ_1 0x55 
 
 
 #define C_I_0   0x00  
