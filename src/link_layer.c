@@ -17,6 +17,7 @@ volatile int alarmEnabled = FALSE;
 volatile int alarmCount = 0;
 volatile int uaReceived = FALSE;
 volatile int STOP = FALSE;
+static int sequenceNumber = 0;
 
 int sendSupervisionFrame(LinkLayerRole role, unsigned char controlField);
 int waitForSupervisionFrame(LinkLayerRole role, unsigned char expectedC, int timeoutSeconds);
@@ -63,15 +64,27 @@ int llopen(LinkLayer connectionParameters)
 ////////////////////////////////////////////////
 // LLWRITE
 ////////////////////////////////////////////////
-int llwrite(const unsigned char *buf, int bufSize, LinkLayer connectionParameters)
+int llwrite(const unsigned char *buf, int bufSize)
 {
+        int max_retries = 3;
+        int retries = 0;
+        
+        while(retries < max_retries){
+            retries++;
+            
+            sendIframe(buf, bufSize, sequenceNumber);
 
-    if (connectionParameters.role == LlTx) {
-        sendIframe();
-    } else if (connectionParameters.role == LlRx) {
-        //Send RR or REJ
-       
-    }
+            struct sigaction act = {0};
+            act.sa_handler = &alarmHandler;
+            if (sigaction(SIGALRM, &act, NULL) == -1) {
+                perror("sigaction");
+                return -1;
+            }
+            alarmEnabled = TRUE;
+            alarm(connectionParameters.timeout);
+            
+            waitForSupervisionFrame(LlTx, , connectionParameters.timeout);
+        }
 
     return 0;
 }
@@ -79,17 +92,25 @@ int llwrite(const unsigned char *buf, int bufSize, LinkLayer connectionParameter
 ////////////////////////////////////////////////
 // LLREAD
 ////////////////////////////////////////////////
-int llread(unsigned char *packet, LinkLayer connectionParameters)
+int llread(unsigned char *packet)
 {
-    if (connectionParameters.role == LlTx) {
-        sendIframe();
-    } else if (connectionParameters.role == LlRx) {
-    
-       
+    if(readIFrame(LlRx, connectionParameters.timeout,&packet,&packetSize, sequenceNumber) == -1) {
+        if(sequenceNumber == 0){
+            sendSupervisionFrame(LlRx, C_REJ_0);
+        } else {
+            sendSupervisionFrame(LlRx, C_REJ_1);
+        }
+        return -1;
+    } else {
+        if(sequenceNumber == 0){
+            sendSupervisionFrame(LlRx, C_REJ_0);
+        } else {
+            sendSupervisionFrame(LlRx, C_REJ_1);
+        }
+        sequenceNumber = (sequenceNumber + 1) % 2;
+        return packetSize;
     }
-
-
-    return 0;
+    
 }
 
 ////////////////////////////////////////////////
@@ -186,11 +207,21 @@ int sendAndWaitResponse(LinkLayer connectionParameters, unsigned char commandC, 
         }
         LinkLayerRole responderRole = (connectionParameters.role == LlTx) ? LlRx : LlTx;
 
-        if (waitForSupervisionFrame(responderRole, expectedReplyC, connectionParameters.timeout) == 0) {
-            printf("Response received successfully!\n");
-            return 0; 
+        struct sigaction act = {0};
+        act.sa_handler = &alarmHandler;
+        if (sigaction(SIGALRM, &act, NULL) == -1) {
+            perror("sigaction");
+            return -1;
         }
-        
+
+        alarmEnabled = TRUE;
+        alarm(connectionParameters.timeout);
+        while (alarmEnabled) {
+            if (waitForSupervisionFrame(responderRole, expectedReplyC, connectionParameters.timeout) == 0) {
+                printf("Response received successfully!\n");
+                return 0; 
+            }
+        }
         printf("No response - retry %d/%d\n", retries, connectionParameters.nRetransmissions);
     }
     
@@ -203,29 +234,18 @@ int waitForSupervisionFrame(LinkLayerRole role, unsigned char expectedC, int tim
     unsigned char expectedA;
     expectedA = (role == LlRx) ? A_T : A_R;
 
-    struct sigaction act = {0};
-    act.sa_handler = &alarmHandler;
-    if (sigaction(SIGALRM, &act, NULL) == -1) {
-        perror("sigaction");
-        return -1;
-    }
-
-    alarmEnabled = TRUE;
-    alarm(timeoutSeconds);
+    
 
     int state = 0;
     unsigned char receivedA = 0, receivedC = 0, receivedBCC = 0;
     
-    printf("Waiting for frame (A=0x%02X, C=0x%02X) with %ds timeout...\n", expectedA, expectedC, timeoutSeconds);
+    printf("Waiting for frame (A=0x%02X, C=0x%02X) with %ds timeout...\n", expectedA, expectedC, timeoutSeconds); 
     
-    while (alarmEnabled)
-    {
-        unsigned char byte;
-        int res = readByteSerialPort(&byte);
-        if (res <= 0) continue;
+    unsigned char byte;
+    int res = readByteSerialPort(&byte);
+    if (res <= 0) return -1;
 
-        switch (state)
-        {
+    switch (state){
         case 0: // Flag
             if (byte == FLAG) state = 1;
             break;
@@ -256,10 +276,7 @@ int waitForSupervisionFrame(LinkLayerRole role, unsigned char expectedC, int tim
         default:
             state = 0;
             break;
-        }
     }
-
-    printf("Timeout - no frame received\n");
     return -1; 
 }
 
@@ -296,14 +313,14 @@ int sendIFrame(unsigned char *data, int datasize, int seqNumber){
         return -1;
     }
     
-    printf("Frame sent: A=0x%02X, C=0x%02X (%d bytes)\n", sendA, controlField, bytes);
+    printf("Frame sent: A=0x%02X, C=0x%02X (%d bytes)\n", A_T, controlField, bytes);
     return 0;
 
 
 }
 
 
-int recieveIFrame(LinkLayerRole role, int timeoutSeconds, unsigned char *dest, int destSize, int seqNumber)
+int readIFrame(LinkLayerRole role, int timeoutSeconds, unsigned char *dest, int destSize, int seqNumber)
 {
     unsigned char expectedA, expectedC;
     expectedA =  A_T;
