@@ -18,7 +18,6 @@ volatile int alarmCount = 0;
 volatile int uaReceived = FALSE;
 volatile int STOP = FALSE;
 
-// Forward declarations for internal helpers
 int sendSupervisionFrame(LinkLayerRole role, unsigned char controlField);
 int waitForSupervisionFrame(LinkLayerRole role, unsigned char expectedC, int timeoutSeconds);
 int sendAndWaitResponse(LinkLayer connectionParameters, unsigned char commandC, unsigned char expectedReplyC);
@@ -34,7 +33,6 @@ int llopen(LinkLayer connectionParameters)
         return -1;
 
     if (connectionParameters.role == LlTx) {
-        // Transmitter: send SET, wait for UA (with retries)
         if (sendAndWaitResponse(connectionParameters, C_SET, C_UA) == -1) {
             printf("Failed to establish connection\n");
             closeSerialPort();
@@ -44,7 +42,6 @@ int llopen(LinkLayer connectionParameters)
         return 0;
         
     } else if (connectionParameters.role == LlRx) {
-        // Receiver: wait for SET (extended timeout for Tx retries), then send UA
         int extendedTimeout = connectionParameters.timeout * connectionParameters.nRetransmissions;
         if (waitForSupervisionFrame(LlRx, C_SET, extendedTimeout) == -1) {
             closeSerialPort();
@@ -97,14 +94,12 @@ int llclose(LinkLayer connectionParameters)
     if (connectionParameters.role == LlTx) {
         printf("Transmitter: Initiating disconnect...\n");
         
-        // Send DISC and wait for DISC response (with retries handled by orchestrator)
         if (sendAndWaitResponse(connectionParameters, C_DISC, C_DISC) == -1) {
             printf("Failed to receive DISC response\n");
             closeSerialPort();
             return -1;
         }
         
-        // Send UA (no wait)
         if (sendSupervisionFrame(LlTx, C_UA) == -1) {
             closeSerialPort();
             return -1;
@@ -119,14 +114,12 @@ int llclose(LinkLayer connectionParameters)
     } else if (connectionParameters.role == LlRx) {
         printf("Receiver: Waiting for disconnect...\n");
         
-        // Wait for DISC
         if (waitForSupervisionFrame(LlRx, C_DISC, connectionParameters.timeout * connectionParameters.nRetransmissions) == -1) {
             printf("Timeout: Failed to receive DISC frame\n");
             closeSerialPort();
             return -1;
         }
         
-        // Send DISC and wait for UA (with retries handled by orchestrator)
         if (sendAndWaitResponse(connectionParameters, C_DISC, C_UA) == -1) {
             printf("Failed to receive UA after sending DISC\n");
             closeSerialPort();
@@ -151,12 +144,6 @@ void alarmHandler(int signal)
     printf("Alarm #%d received\n", alarmCount);
 }
 
-/**
- * Send a supervision/unnumbered frame (no waiting)
- * @param role - LlTx or LlRx (determines A field)
- * @param controlField - Control field to send (C_SET, C_DISC, C_UA, etc.)
- * @return 0 on success, -1 on failure
- */
 int sendSupervisionFrame(LinkLayerRole role, unsigned char controlField)
 {
     unsigned char sendA = (role == LlTx) ? A_T : A_R;
@@ -178,13 +165,6 @@ int sendSupervisionFrame(LinkLayerRole role, unsigned char controlField)
     return 0;
 }
 
-/**
- * Send a command frame and wait for expected response with retry mechanism
- * @param connectionParameters - Connection config (includes role, timeout, nRetransmissions)
- * @param commandC - Control field to send (C_SET, C_DISC, etc.)
- * @param expectedReplyC - Expected control field in response (C_UA, C_DISC, etc.)
- * @return 0 on success, -1 on failure
- */
 int sendAndWaitResponse(LinkLayer connectionParameters, unsigned char commandC, unsigned char expectedReplyC)
 {
     int retries = 0;
@@ -193,21 +173,16 @@ int sendAndWaitResponse(LinkLayer connectionParameters, unsigned char commandC, 
     
     while (retries < connectionParameters.nRetransmissions) {
         retries++;
-        
-        // 1. Send command frame
+
         if (sendSupervisionFrame(connectionParameters.role, commandC) == -1) {
             printf("Failed to send command frame (attempt %d/%d)\n", retries, connectionParameters.nRetransmissions);
-            continue; // Try again
+            continue;
         }
-        
-        // 2. Wait for response (single attempt - no nested retries!)
-        // Determine the role of the *responder* (opposite of sender)
         LinkLayerRole responderRole = (connectionParameters.role == LlTx) ? LlRx : LlTx;
-        // Note: when we wait we must use the responder's role so the expected A field
-        // is computed correctly inside waitForSupervisionFrame.
+
         if (waitForSupervisionFrame(responderRole, expectedReplyC, connectionParameters.timeout) == 0) {
             printf("Response received successfully!\n");
-            return 0; // Success!
+            return 0; 
         }
         
         printf("No response - retry %d/%d\n", retries, connectionParameters.nRetransmissions);
@@ -217,31 +192,11 @@ int sendAndWaitResponse(LinkLayer connectionParameters, unsigned char commandC, 
     return -1;
 }
 
-/**
- * Wait for a specific supervision/unnumbered frame (SINGLE ATTEMPT with timeout)
- * @param role - LlTx or LlRx (determines expected A field)
- * @param expectedC - Expected control field
- * @param timeoutSeconds - Timeout for this attempt
- * @return 0 on success, -1 on timeout
- */
 int waitForSupervisionFrame(LinkLayerRole role, unsigned char expectedC, int timeoutSeconds)
 {
     unsigned char expectedA;
+    expectedA = (role == LlRx) ? A_T : A_R;
 
-    // Determine expected A depending on what control field we're waiting for.
-    // SET is a command sent by Tx and uses A_T. UA is a reply sent by Rx and uses A_T.
-    // DISC is a special case: when Rx waits for DISC (role == LlRx) it expects a DISC from Tx (A_T),
-    // while when Tx waits for DISC (role == LlTx) it expects a DISC from Rx (A_R).
-    if (expectedC == C_SET || expectedC == C_UA) {
-        expectedA = A_T;
-    } else if (expectedC == C_DISC) {
-        expectedA = (role == LlRx) ? A_T : A_R;
-    } else {
-        // Default: assume A_T for now (will be refined for RR/REJ/I frames later)
-        expectedA = A_T;
-    }
-
-    // Setup alarm handler
     struct sigaction act = {0};
     act.sa_handler = &alarmHandler;
     if (sigaction(SIGALRM, &act, NULL) == -1) {
@@ -283,12 +238,12 @@ int waitForSupervisionFrame(LinkLayerRole role, unsigned char expectedC, int tim
             else if (byte == FLAG) state = 1; 
             else state = 0;
             break;
-        case 4: // closing FLAG
+        case 4: 
             if (byte == FLAG) {
                 printf("Frame received (A=0x%02X, C=0x%02X)\n", receivedA, receivedC);
                 alarm(0);
                 alarmEnabled = FALSE;
-                return 0; // Success!
+                return 0;
             } 
             else state = 0;
             break;
@@ -299,7 +254,7 @@ int waitForSupervisionFrame(LinkLayerRole role, unsigned char expectedC, int tim
     }
 
     printf("Timeout - no frame received\n");
-    return -1; // Timeout
+    return -1; 
 }
 
 
