@@ -26,7 +26,7 @@
 
 #define BCC1(a, c) ((a) ^ (c))
 
-#define SEQ 0
+#define MAX_RETRIES 3
 
 
 

@@ -15,7 +15,6 @@
 
 volatile int alarmEnabled = FALSE;
 volatile int alarmCount = 0;
-volatile int uaReceived = FALSE;
 volatile int STOP = FALSE;
 static int sequenceNumber = 0;
 
@@ -30,28 +29,41 @@ int sendAndWaitResponse(LinkLayer connectionParameters, unsigned char commandC, 
 ////////////////////////////////////////////////
 int llopen(LinkLayer connectionParameters)
 {
-    struct sigaction act = {0};
-    act.sa_handler = &alarmHandler;
-    if (sigaction(SIGALRM, &act, NULL) == -1) {
-        perror("sigaction");
-        return -1;
-    }
-
     if (openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate) == -1) 
         return -1;
 
     if (connectionParameters.role == LlTx) {
-        if (sendAndWaitResponse(connectionParameters, C_SET, C_UA) == -1) {
-            printf("Failed to establish connection\n");
-            closeSerialPort();
+        setupAlarm();
+        while (alarmCount < 3) {
+            if(sendSupervisionFrame(LlTx, C_SET) == -1){
+                return -1;
+            }
+            printf("Sended set"'\n');
+
+            alarm(3);
+            alarmEnabled = TRUE;
+            
+            int UA = FALSE;
+
+            while (alarmEnabled && UA)
+            {
+                if(readSupervisionFrame(LlTx, C_UA)){
+                    printf("\nReceived UA frame <-\n");
+                    UA = TRUE;
+                    
+                }
+            }
+            if(UA){
+                alarm(0);
+                alarmEnabled = FALSE;
+                alarmCount = 0;
+                return 0;
+            }  
+            alarmCount = 0;
             return -1;
         }
-        printf("Connection established (Transmitter)\n");
-        return 0;
-        
     } else if (connectionParameters.role == LlRx) {
-        int extendedTimeout = connectionParameters.timeout * connectionParameters.nRetransmissions;
-        if (waitForSupervisionFrame(LlRx, C_SET, extendedTimeout) == -1) {
+        if (readSupervisionFrame(LlRx, C_SET) == -1) {
             closeSerialPort();
             return -1;
         }
@@ -61,7 +73,7 @@ int llopen(LinkLayer connectionParameters)
             return -1;
         }
         
-        printf("Connection established (Receiver)\n");
+        printf("Connection established! \n");
         return 0;
     }
 
@@ -73,53 +85,33 @@ int llopen(LinkLayer connectionParameters)
 ////////////////////////////////////////////////
 int llwrite(const unsigned char *buf, int bufSize)
 {
-
-    if (connectionParameters.role == LlRx) {
-        printf("ERROR: Receiver cannot execute llwrite.\n");
-        return -1;
-    }
-
-    int retries = 0;
-    int maxRetries = 3;
-
-    while (retries < maxRetries) {
-        retries++;
-
+    while (alarmCount < 3) {
         if (sendIFrame(buf, bufSize, sequenceNumber) == -1) {
-            printf("Failed to send command frame (attempt %d/%d)\n", retries, maxRetries);
-            continue;
+            return -1;
         }
-        LinkLayerRole responderRole = (connectionParameters.role == LlTx) ? LlRx : LlTx;
+        printf("I-Frame sent (Ns=%d)\n", sequenceNumber);
 
         alarmEnabled = TRUE;
-        alarm(connectionParameters.timeout);
-        //here check for either rr or rej frames
-        unsigned char expectedRR = (sequenceNumber == 0) ? C_RR_1 : C_RR_0;
-        int response = waitForSupervisionFrame(responderRole, expectedRR, connectionParameters.timeout);
-
-        alarm(0); 
-        alarmEnabled = FALSE;
-
-        if (response == 0) { //RR
-            printf("Response received successfully!\n");
-            alarm(0); 
-            alarmEnabled = FALSE;
-            sequenceNumber = (sequenceNumber + 1) % 2;
-            return 0; 
-        }
-        else if (response == 1) //REJ
+        alarm(3);
+        unsigned char RR = (sequenceNumber == 0) ? C_RR_1 : C_RR_0;
+        unsigned char REJ = (sequenceNumber == 0) ? C_REJ_0 : C_REJ_1;
+        while (alarmEnabled)
         {
-            printf("Received REJ frame\n");
-            continue;
+            if(readSupervisionFrame(LlTx, RR) == 0) 
+            {
+                printf("Response received successfully!\n");
+                alarm(0); 
+                alarmEnabled = FALSE;
+                sequenceNumber = (sequenceNumber + 1) % 2;
+                return 0; 
+            }
+            else if (readSupervisionFrame(LlTx, REJ) == 0)
+            {
+                printf("Received REJ frame\n");
+                break;
+            }
         }
-        else{
-            printf("Unexpected response received or time out\n");
-            continue;
-        }
-        
     }
-    
-    printf("Failed after %d attempts\n", connectionParameters.nRetransmissions);
     return -1;
 }
 
@@ -128,27 +120,7 @@ int llwrite(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 int llread(unsigned char *packet)
 {   
-    int dataLength = 0;
-    int receivedNs = readIFrame(LlRx, connectionParameters.timeout, packet, MAX_PAYLOAD_SIZE, &dataLength, sequenceNumber);
 
-    if(receivedNs == -1) {
-        return -1;
-    } else if (receivedNs == -2) {
-        if(sequenceNumber == 0){
-            sendSupervisionFrame(LlRx, C_REJ_0);
-        } else {
-            sendSupervisionFrame(LlRx, C_REJ_1);
-        }
-        return 0;
-    } else {
-        if(sequenceNumber == 0){
-            sendSupervisionFrame(LlRx, C_RR_1);
-        } else {
-            sendSupervisionFrame(LlRx, C_RR_0);
-        }
-        
-        return dataLength;
-    }
     
 }
 
@@ -157,171 +129,125 @@ int llread(unsigned char *packet)
 ////////////////////////////////////////////////
 int llclose(LinkLayer connectionParameters)
 {
+    if (openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate) == -1) 
+        return -1;
+
     if (connectionParameters.role == LlTx) {
-        printf("Transmitter: Initiating disconnect...\n");
-        
-        if (sendAndWaitResponse(connectionParameters, C_DISC, C_DISC) == -1) {
-            printf("Failed to receive DISC response\n");
-            closeSerialPort();
+        while (alarmCount < connectionParameters.nRetransmissions) {
+            if(sendSupervisionFrame(LlTx, C_DISC) == -1){
+                return -1;
+            }
+            printf("Sended DISC frame\n");
+
+            alarm(3);
+            alarmEnabled = TRUE;
+            
+            int DISC = FALSE;
+
+            while (alarmEnabled && DISC)
+            {
+                if(readSupervisionFrame(LlTx, C_DISC)){
+                    printf("\nReceived UA frame <-\n");
+                    DISC = TRUE;
+                    
+                }
+            }
+            if(DISC){
+                alarm(0);
+                alarmEnabled = FALSE;
+                alarmCount = 0;
+                if(sendSupervisionFrame(LlTx, C_UA) == -1){
+                    return -1;
+                }
+                printf("Sent UA frame\n");
+                break;
+            }  
+            alarmCount = 0;
             return -1;
         }
-        
-        if (sendSupervisionFrame(LlTx, C_UA) == -1) {
-            closeSerialPort();
-            return -1;
-        }
-        
-        if (closeSerialPort() < 0) {
-            perror("Error closing serial port");
-            return -1;
-        }
-        printf("Transmitter: Connection closed successfully\n");
-        
     } else if (connectionParameters.role == LlRx) {
-        printf("Receiver: Waiting for disconnect...\n");
-        
-        if (waitForSupervisionFrame(LlRx, C_DISC, connectionParameters.timeout * connectionParameters.nRetransmissions) == -1) {
-            printf("Timeout: Failed to receive DISC frame\n");
-            closeSerialPort();
+        if (readSupervisionFrame(LlRx, C_SET) == -1) {
+
             return -1;
         }
+        printf("Received DISC frame\n");
         
-        if (sendAndWaitResponse(connectionParameters, C_DISC, C_UA) == -1) {
-            printf("Failed to receive UA after sending DISC\n");
-            closeSerialPort();
+        if (sendSupervisionFrame(LlRx, C_UA) == -1) {
             return -1;
         }
-        
-        if (closeSerialPort() < 0) {
-            perror("Error closing serial port");
-            return -1;
-        }
-        printf("Receiver: Connection closed successfully\n");
+        printf("Sent UA frame\n");
+
     }
 
-    return 0;
+    printf("Connection closed! \n Bye, Bye!! \n");
+    return closeSerialPort();
 }
 
-void alarmHandler(int signal)
-{
-    alarmEnabled = FALSE;
-    alarmCount++;
-
-    printf("Alarm #%d received\n", alarmCount);
-}
 
 int sendSupervisionFrame(LinkLayerRole role, unsigned char controlField)
 {
     unsigned char sendA = (role == LlTx) ? A_T : A_R;
-    
     unsigned char frame[5];
     frame[0] = FLAG;
     frame[1] = sendA;
     frame[2] = controlField;
     frame[3] = BCC1(sendA, controlField);
     frame[4] = FLAG;
-    
-    int bytes = writeBytesSerialPort(frame, sizeof(frame));
-    if (bytes < 0) {
-        perror("Error sending frame");
-        return -1;
-    }
-    
-    printf("Frame sent: A=0x%02X, C=0x%02X (%d bytes)\n", sendA, controlField, bytes);
-    return 0;
+    return writeBytesSerialPort(frame, sizeof(frame));
 }
-
-int sendAndWaitResponse(LinkLayer connectionParameters, unsigned char commandC, unsigned char expectedReplyC)
+int readSupervisionFrame(LinkLayerRole role, unsigned char c)
 {
-    int retries = 0;
-    
-    printf("Starting send-and-wait: command C=0x%02X, expecting reply C=0x%02X\n", commandC, expectedReplyC);
-    
-    while (retries < connectionParameters.nRetransmissions) {
-        retries++;
-
-        if (sendSupervisionFrame(connectionParameters.role, commandC) == -1) {
-            printf("Failed to send command frame (attempt %d/%d)\n", retries, connectionParameters.nRetransmissions);
-            continue;
-        }
-        LinkLayerRole responderRole = (connectionParameters.role == LlTx) ? LlRx : LlTx;
-
-        alarmEnabled = TRUE;
-        alarm(connectionParameters.timeout);
-        if (waitForSupervisionFrame(responderRole, expectedReplyC, connectionParameters.timeout) == 0) {
-            printf("Response received successfully!\n");
-            return 0; 
-        }
-        alarm(0); 
-        alarmEnabled = FALSE;
-        printf("No response - retry %d/%d\n", retries, connectionParameters.nRetransmissions);
-    }
-    
-
-    printf("Failed after %d attempts\n", connectionParameters.nRetransmissions);
-    return -1;
-}
-
-int waitForSupervisionFrame(LinkLayerRole role, unsigned char expectedC, int timeoutSeconds)
-{
-    unsigned char expectedA;
-    expectedA = (role == LlRx) ? A_T : A_R;
-
-    unsigned char rejC;
-    int dual_check_mode = FALSE;
-    if (expectedC == C_RR_0) {
-        rejC = C_REJ_0;
-        dual_check_mode = TRUE;
-    } else if (expectedC == C_RR_1) {
-        rejC = C_REJ_1;
-        dual_check_mode = TRUE;
-    }
-
+    unsigned char A_role = (role == LlRx) ? A_T : A_R;
     int state = 0;
-    unsigned char receivedA = 0, receivedC = 0, receivedBCC = 0;
-    
-    printf("Waiting for frame (A=0x%02X, C=0x%02X) with %ds timeout...\n", expectedA, expectedC, timeoutSeconds); 
+    unsigned char byte, bcc[2];
     
     while (alarmEnabled) {
-        unsigned char byte;
         int res = readByteSerialPort(&byte); 
         switch (state) {
             case 0: // Flag
-                if (byte == FLAG) state = 1;
+                if (byte == FLAG)
+                { 
+                    state = 1;
+                }
                 break;
             case 1: // A
-                if (byte == expectedA) { receivedA = byte; state = 2; }
-                else if (byte != FLAG) state = 0;
+                if (byte == A_role) 
+                {
+                    bcc[0] = byte; 
+                    state = 2; 
+                }
+                else state = 0;
                 break;
             case 2: // C
-                if (byte == expectedC) { receivedC = byte; state = 3; }
-                else if (dual_check_mode && byte == rejC) { receivedC = byte; state = 3; }
-                else if (byte == FLAG) state = 1; 
+                if(byte == c)
+                {
+                    bcc[1] = byte;
+                    state = 3;
+                }
                 else state = 0;
                 break;
             case 3: // BCC1
-                receivedBCC = byte;
-                if (receivedBCC == BCC1(receivedA, receivedC)) state = 4;
-                else if (byte == FLAG) state = 1; 
+                if (byte == BCC1(bcc[0], bcc[1])) {
+                    state = 4;
+                }
                 else state = 0;
                 break;
             case 4: //Flag
                 if (byte == FLAG) {
-                    printf("Frame received (A=0x%02X, C=0x%02X)\n", receivedA, receivedC);
-                    if (dual_check_mode) {
-                        return (receivedC == expectedC) ? 0 : 1;
-                    }
+                    printf("Frame received (A=0x%02X, C=0x%02X)\n", bcc[0], bcc[1]);
                     return 0;
                 } 
                 else state = 0;
                 break;
-            default:
-                state = 0;
-                break;
         }
     }
+    alarmEnabled = FALSE;
     return -1; 
 }
+
+
+
+
 
 
 int sendIFrame(unsigned char *data, int datasize, int seqNumber){
@@ -332,7 +258,6 @@ int sendIFrame(unsigned char *data, int datasize, int seqNumber){
 
     int max_stuffed = 2 * (datasize + 1) + 1;
     unsigned char *stuffed = malloc(max_stuffed);
-    if (!stuffed) return -1;
 
     int stuffedsize = stuffBytes(tmp, datasize + 1, stuffed);
     int frame_size = stuffedsize + 5;
@@ -348,18 +273,9 @@ int sendIFrame(unsigned char *data, int datasize, int seqNumber){
     frame[3] = BCC1(A_T, controlField);
     memcpy(&frame[4], stuffed, stuffedsize);
     frame[frame_size - 1] = FLAG;
+    free(stuffed);
 
-    int bytes = writeBytesSerialPort(frame, sizeof(frame));
-
-    if (bytes < 0) {
-        perror("Error sending frame");
-        return -1;
-    }
-    
-    printf("Frame sent: A=0x%02X, C=0x%02X (%d bytes)\n", A_T, controlField, bytes);
-    return 0;
-
-
+    return writeBytesSerialPort(frame, sizeof(frame));
 }
 
 
@@ -480,11 +396,18 @@ int replaceByte(unsigned char byte, unsigned char *res){
     
 }
 
+void setupAlarm() {
+    struct sigaction act = {0};
+    act.sa_handler = &alarmHandler;
+    if (sigaction(SIGALRM, &act, NULL) == -1) {
+        perror("sigaction");
+        exit(1);
+    }
+}
+
 
 int stuffBytes(unsigned char *data, int dataSize, unsigned char *dest){
-    int max_size = 2 * dataSize + 1;
-
-    if (!data || !dest || dataSize < 0) return -1;
+    int max_size = 2 * dataSize + 8;
 
     int dest_size = 0;
     for(int i =0; i < dataSize; i++){
@@ -520,4 +443,6 @@ int destuffBytes(unsigned char *data, int dataSize, unsigned char *dest){
     return dest_size;
 
 }
+
+
 
