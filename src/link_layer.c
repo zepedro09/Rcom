@@ -93,22 +93,27 @@ int llwrite(const unsigned char *buf, int bufSize)
 // LLREAD
 ////////////////////////////////////////////////
 int llread(unsigned char *packet)
-{
-    if(readIFrame(LlRx, connectionParameters.timeout,&packet,&packetSize, sequenceNumber) == -1) {
+{   
+    int dataLength = 0;
+    int receivedNs = readIFrame(LlRx, connectionParameters.timeout, packet, MAX_PAYLOAD_SIZE, &dataLength, sequenceNumber);
+
+    if(receivedNs == -1) {
+        return -1;
+    } else if (receivedNs == -2) {
         if(sequenceNumber == 0){
             sendSupervisionFrame(LlRx, C_REJ_0);
         } else {
             sendSupervisionFrame(LlRx, C_REJ_1);
         }
-        return -1;
+        return 0;
     } else {
         if(sequenceNumber == 0){
-            sendSupervisionFrame(LlRx, C_REJ_0);
+            sendSupervisionFrame(LlRx, C_RR_1);
         } else {
-            sendSupervisionFrame(LlRx, C_REJ_1);
+            sendSupervisionFrame(LlRx, C_RR_0);
         }
-        sequenceNumber = (sequenceNumber + 1) % 2;
-        return packetSize;
+        
+        return dataLength;
     }
     
 }
@@ -216,11 +221,11 @@ int sendAndWaitResponse(LinkLayer connectionParameters, unsigned char commandC, 
 
         alarmEnabled = TRUE;
         alarm(connectionParameters.timeout);
-        while (alarmEnabled) {
-            if (waitForSupervisionFrame(responderRole, expectedReplyC, connectionParameters.timeout) == 0) {
-                printf("Response received successfully!\n");
-                return 0; 
-            }
+        if (waitForSupervisionFrame(responderRole, expectedReplyC, connectionParameters.timeout) == 0) {
+            printf("Response received successfully!\n");
+            alarm(0); 
+            alarmEnabled = FALSE;
+            return 0; 
         }
         printf("No response - retry %d/%d\n", retries, connectionParameters.nRetransmissions);
     }
@@ -234,50 +239,110 @@ int waitForSupervisionFrame(LinkLayerRole role, unsigned char expectedC, int tim
     unsigned char expectedA;
     expectedA = (role == LlRx) ? A_T : A_R;
 
-    
+    unsigned char rejC;
+    int dual_check_mode = FALSE;
+    if (expectedC == C_RR_0) {
+        rejC = C_REJ_0;
+        dual_check_mode = TRUE;
+    } else if (expectedC == C_RR_1) {
+        rejC = C_REJ_1;
+        dual_check_mode = TRUE;
+    }
 
     int state = 0;
     unsigned char receivedA = 0, receivedC = 0, receivedBCC = 0;
     
     printf("Waiting for frame (A=0x%02X, C=0x%02X) with %ds timeout...\n", expectedA, expectedC, timeoutSeconds); 
     
-    unsigned char byte;
-    int res = readByteSerialPort(&byte);
-    if (res <= 0) return -1;
-
-    switch (state){
-        case 0: // Flag
-            if (byte == FLAG) state = 1;
-            break;
-        case 1: // A
-            if (byte == expectedA) { receivedA = byte; state = 2; }
-            else if (byte != FLAG) state = 0;
-            break;
-        case 2: // C
-            if (byte == expectedC) { receivedC = byte; state = 3; }
-            else if (byte == FLAG) state = 1; 
-            else state = 0;
-            break;
-        case 3: // BCC1
-            receivedBCC = byte;
-            if (receivedBCC == BCC1(receivedA, receivedC)) state = 4;
-            else if (byte == FLAG) state = 1; 
-            else state = 0;
-            break;
-        case 4: //Flag
-            if (byte == FLAG) {
-                printf("Frame received (A=0x%02X, C=0x%02X)\n", receivedA, receivedC);
-                alarm(0);
-                alarmEnabled = FALSE;
-                return 0;
-            } 
-            else state = 0;
-            break;
-        default:
-            state = 0;
-            break;
+    while (alarmEnabled) {
+        unsigned char byte;
+        int res = readByteSerialPort(&byte); 
+        switch (state) {
+            case 0: // Flag
+                if (byte == FLAG) state = 1;
+                break;
+            case 1: // A
+                if (byte == expectedA) { receivedA = byte; state = 2; }
+                else if (byte != FLAG) state = 0;
+                break;
+            case 2: // C
+                if (byte == expectedC) { receivedC = byte; state = 3; }
+                else if (dual_check_mode && byte == rejC) { receivedC = byte; state = 3; }
+                else if (byte == FLAG) state = 1; 
+                else state = 0;
+                break;
+            case 3: // BCC1
+                receivedBCC = byte;
+                if (receivedBCC == BCC1(receivedA, receivedC)) state = 4;
+                else if (byte == FLAG) state = 1; 
+                else state = 0;
+                break;
+            case 4: //Flag
+                if (byte == FLAG) {
+                    printf("Frame received (A=0x%02X, C=0x%02X)\n", receivedA, receivedC);
+                    if (dual_check_mode) {
+                        return (receivedC == expectedC) ? 0 : 1;
+                    }
+                    return 0;
+                } 
+                else state = 0;
+                break;
+            default:
+                state = 0;
+                break;
+        }
     }
     return -1; 
+}
+
+int sendIAndWaitResponse(LinkLayer connectionParameters, unsigned char *data, int datasize, int seqNumber)
+{
+    int retries = 0;
+    
+    
+    while (retries < connectionParameters.nRetransmissions) {
+        retries++;
+
+        if (sendIFrame(data, datasize, seqNumber) == -1) {
+            printf("Failed to send command frame (attempt %d/%d)\n", retries, connectionParameters.nRetransmissions);
+            continue;
+        }
+        LinkLayerRole responderRole = (connectionParameters.role == LlTx) ? LlRx : LlTx;
+
+        struct sigaction act = {0};
+        act.sa_handler = &alarmHandler;
+        if (sigaction(SIGALRM, &act, NULL) == -1) {
+            perror("sigaction");
+            return -1;
+        }
+
+        alarmEnabled = TRUE;
+        alarm(connectionParameters.timeout);
+            //here check for either rr or rej frames
+        unsigned char expectedRR = (seqNumber == 0) ? C_RR_0 : C_RR_1;
+        int response = waitForSupervisionFrame(responderRole, expectedRR, connectionParameters.timeout);
+        if (response == 0) {
+            printf("Response received successfully!\n");
+            alarm(0); 
+            alarmEnabled = FALSE;
+            sequenceNumber = (sequenceNumber + 1) % 2;
+            return 0; 
+        }
+        else if (response == 1)
+        {
+            printf("Received REJ frame\n");
+            continue;
+        }
+        else{
+            printf("Unexpected response received or time out\n");
+            continue;;
+        }
+        
+        printf("No response - retry %d/%d\n", retries, connectionParameters.nRetransmissions);
+    }
+    
+    printf("Failed after %d attempts\n", connectionParameters.nRetransmissions);
+    return -1;
 }
 
 
@@ -320,21 +385,12 @@ int sendIFrame(unsigned char *data, int datasize, int seqNumber){
 }
 
 
-int readIFrame(LinkLayerRole role, int timeoutSeconds, unsigned char *dest, int destSize, int seqNumber)
+int readIFrame(LinkLayerRole role, int timeoutSeconds, unsigned char *dest, int destSize, int *dataLength, int seqNumber)
 {
     unsigned char expectedA, expectedC;
     expectedA =  A_T;
     expectedC = (seqNumber == 0) ? C_I_0 : C_I_1;
 
-    struct sigaction act = {0};
-    act.sa_handler = &alarmHandler;
-    if (sigaction(SIGALRM, &act, NULL) == -1) {
-        perror("sigaction");
-        return -1;
-    }
-
-    alarmEnabled = TRUE;
-    alarm(timeoutSeconds);
 
     int state = 0;
     unsigned char receivedA = 0, receivedC = 0, receivedBCC = 0;
@@ -387,6 +443,7 @@ int readIFrame(LinkLayerRole role, int timeoutSeconds, unsigned char *dest, int 
 
                 alarm(0);
                 alarmEnabled = FALSE;
+                *dataLength = destSize - 1;
                 return seqNumber;
             }
             else{
@@ -407,6 +464,7 @@ int readIFrame(LinkLayerRole role, int timeoutSeconds, unsigned char *dest, int 
     printf("Timeout - no frame received\n");
     return -1; 
 }
+
 
 int createBCC2 (const unsigned char *data, int dataSize){
     int bcc2 = 0x00;
