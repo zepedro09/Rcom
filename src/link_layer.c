@@ -30,6 +30,13 @@ int sendAndWaitResponse(LinkLayer connectionParameters, unsigned char commandC, 
 ////////////////////////////////////////////////
 int llopen(LinkLayer connectionParameters)
 {
+    struct sigaction act = {0};
+    act.sa_handler = &alarmHandler;
+    if (sigaction(SIGALRM, &act, NULL) == -1) {
+        perror("sigaction");
+        return -1;
+    }
+
     if (openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate) == -1) 
         return -1;
 
@@ -66,27 +73,54 @@ int llopen(LinkLayer connectionParameters)
 ////////////////////////////////////////////////
 int llwrite(const unsigned char *buf, int bufSize)
 {
-        int max_retries = 3;
-        int retries = 0;
-        
-        while(retries < max_retries){
-            retries++;
-            
-            sendIframe(buf, bufSize, sequenceNumber);
 
-            struct sigaction act = {0};
-            act.sa_handler = &alarmHandler;
-            if (sigaction(SIGALRM, &act, NULL) == -1) {
-                perror("sigaction");
-                return -1;
-            }
-            alarmEnabled = TRUE;
-            alarm(connectionParameters.timeout);
-            
-            waitForSupervisionFrame(LlTx, , connectionParameters.timeout);
+    if (connectionParameters.role == LlRx) {
+        printf("ERROR: Receiver cannot execute llwrite.\n");
+        return -1;
+    }
+
+    int retries = 0;
+    int maxRetries = 3;
+
+    while (retries < maxRetries) {
+        retries++;
+
+        if (sendIFrame(buf, bufSize, sequenceNumber) == -1) {
+            printf("Failed to send command frame (attempt %d/%d)\n", retries, maxRetries);
+            continue;
         }
+        LinkLayerRole responderRole = (connectionParameters.role == LlTx) ? LlRx : LlTx;
 
-    return 0;
+        alarmEnabled = TRUE;
+        alarm(connectionParameters.timeout);
+        //here check for either rr or rej frames
+        unsigned char expectedRR = (sequenceNumber == 0) ? C_RR_1 : C_RR_0;
+        int response = waitForSupervisionFrame(responderRole, expectedRR, connectionParameters.timeout);
+
+        alarm(0); 
+        alarmEnabled = FALSE;
+
+        if (response == 0) { //RR
+            printf("Response received successfully!\n");
+            alarm(0); 
+            alarmEnabled = FALSE;
+            sequenceNumber = (sequenceNumber + 1) % 2;
+            return 0; 
+        }
+        else if (response == 1) //REJ
+        {
+            printf("Received REJ frame\n");
+            continue;
+        }
+        else{
+            printf("Unexpected response received or time out\n");
+            continue;
+        }
+        
+    }
+    
+    printf("Failed after %d attempts\n", connectionParameters.nRetransmissions);
+    return -1;
 }
 
 ////////////////////////////////////////////////
@@ -212,24 +246,18 @@ int sendAndWaitResponse(LinkLayer connectionParameters, unsigned char commandC, 
         }
         LinkLayerRole responderRole = (connectionParameters.role == LlTx) ? LlRx : LlTx;
 
-        struct sigaction act = {0};
-        act.sa_handler = &alarmHandler;
-        if (sigaction(SIGALRM, &act, NULL) == -1) {
-            perror("sigaction");
-            return -1;
-        }
-
         alarmEnabled = TRUE;
         alarm(connectionParameters.timeout);
         if (waitForSupervisionFrame(responderRole, expectedReplyC, connectionParameters.timeout) == 0) {
             printf("Response received successfully!\n");
-            alarm(0); 
-            alarmEnabled = FALSE;
             return 0; 
         }
+        alarm(0); 
+        alarmEnabled = FALSE;
         printf("No response - retry %d/%d\n", retries, connectionParameters.nRetransmissions);
     }
     
+
     printf("Failed after %d attempts\n", connectionParameters.nRetransmissions);
     return -1;
 }
@@ -293,56 +321,6 @@ int waitForSupervisionFrame(LinkLayerRole role, unsigned char expectedC, int tim
         }
     }
     return -1; 
-}
-
-int sendIAndWaitResponse(LinkLayer connectionParameters, unsigned char *data, int datasize, int seqNumber)
-{
-    int retries = 0;
-    
-    
-    while (retries < connectionParameters.nRetransmissions) {
-        retries++;
-
-        if (sendIFrame(data, datasize, seqNumber) == -1) {
-            printf("Failed to send command frame (attempt %d/%d)\n", retries, connectionParameters.nRetransmissions);
-            continue;
-        }
-        LinkLayerRole responderRole = (connectionParameters.role == LlTx) ? LlRx : LlTx;
-
-        struct sigaction act = {0};
-        act.sa_handler = &alarmHandler;
-        if (sigaction(SIGALRM, &act, NULL) == -1) {
-            perror("sigaction");
-            return -1;
-        }
-
-        alarmEnabled = TRUE;
-        alarm(connectionParameters.timeout);
-            //here check for either rr or rej frames
-        unsigned char expectedRR = (seqNumber == 0) ? C_RR_0 : C_RR_1;
-        int response = waitForSupervisionFrame(responderRole, expectedRR, connectionParameters.timeout);
-        if (response == 0) {
-            printf("Response received successfully!\n");
-            alarm(0); 
-            alarmEnabled = FALSE;
-            sequenceNumber = (sequenceNumber + 1) % 2;
-            return 0; 
-        }
-        else if (response == 1)
-        {
-            printf("Received REJ frame\n");
-            continue;
-        }
-        else{
-            printf("Unexpected response received or time out\n");
-            continue;;
-        }
-        
-        printf("No response - retry %d/%d\n", retries, connectionParameters.nRetransmissions);
-    }
-    
-    printf("Failed after %d attempts\n", connectionParameters.nRetransmissions);
-    return -1;
 }
 
 
@@ -438,18 +416,20 @@ int readIFrame(LinkLayerRole role, int timeoutSeconds, unsigned char *dest, int 
                 int bcc2 = createBCC2(dest, destSize -1);
                 if(bcc2 != dest[destSize -1]){
                     printf("BCC2 error\n");
-                    return -2;
+                    return -2; //error send REJ
                 }
 
                 alarm(0);
                 alarmEnabled = FALSE;
                 *dataLength = destSize - 1;
-                return seqNumber;
+                return 0; //success send RR
             }
             else{
-                if(tmpLen + 1 > tmp){
+                if(tmpLen + 1 > tmpSize){
                     free(tmp);
                     printf("Temporary buffer overflow\n");
+                    alarm(0);
+                    alarmEnabled = FALSE;
                     return -1;
                 }
                 tmp[tmpLen++] = byte;
@@ -462,6 +442,8 @@ int readIFrame(LinkLayerRole role, int timeoutSeconds, unsigned char *dest, int 
     }
 
     printf("Timeout - no frame received\n");
+    alarm(0);
+    alarmEnabled = FALSE;
     return -1; 
 }
 
