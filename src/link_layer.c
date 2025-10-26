@@ -102,6 +102,7 @@ int llwrite(const unsigned char *buf, int bufSize)
                 printf("Response received successfully!\n");
                 alarm(0); 
                 alarmEnabled = FALSE;
+                alarmCount = 0;
                 sequenceNumber = (sequenceNumber + 1) % 2;
                 return 0; 
             }
@@ -120,8 +121,22 @@ int llwrite(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 int llread(unsigned char *packet)
 {   
-
-    
+    unsigned char RR = (sequenceNumber == 0) ? C_RR_1 : C_RR_0;
+    unsigned char REJ = (sequenceNumber == 0) ? C_REJ_0 : C_REJ_1;
+    int packetsizeval = 0;
+    int *packetsize = &packetsizeval;
+    int response = readIFrame(LlRx, packet, packetsize, sequenceNumber);
+    if(response == 1){
+        if (sendSupervisionFrame(LlRx, REJ) == -1) return -1;
+        printf("Sent REJ \n");
+    }else if(response == 0){
+        if (sendSupervisionFrame(LlRx, RR) == -1) return -1;
+        printf("Sent RR \n");
+    }else{
+        printf("ERROR \n");
+        return -1;
+    }
+    return *packetsize;
 }
 
 ////////////////////////////////////////////////
@@ -205,15 +220,12 @@ int readSupervisionFrame(LinkLayerRole role, unsigned char c)
         int res = readByteSerialPort(&byte); 
         switch (state) {
             case 0: // Flag
-                if (byte == FLAG)
-                { 
-                    state = 1;
-                }
+                if (byte == FLAG) state = 1;
                 break;
             case 1: // A
-                if (byte == A_role) 
+                if (byte == A_role)
                 {
-                    bcc[0] = byte; 
+                    bcc[0] = byte;
                     state = 2; 
                 }
                 else state = 0;
@@ -227,9 +239,7 @@ int readSupervisionFrame(LinkLayerRole role, unsigned char c)
                 else state = 0;
                 break;
             case 3: // BCC1
-                if (byte == BCC1(bcc[0], bcc[1])) {
-                    state = 4;
-                }
+                if (byte == BCC1(bcc[0], bcc[1])) state = 4;
                 else state = 0;
                 break;
             case 4: //Flag
@@ -279,22 +289,15 @@ int sendIFrame(unsigned char *data, int datasize, int seqNumber){
 }
 
 
-int readIFrame(LinkLayerRole role, int timeoutSeconds, unsigned char *dest, int destSize, int *dataLength, int seqNumber)
+int readIFrame(LinkLayerRole role, unsigned char *dest, int *destsize, int seqNumber)
 {
-    unsigned char expectedA, expectedC;
-    expectedA =  A_T;
-    expectedC = (seqNumber == 0) ? C_I_0 : C_I_1;
-
-
+    unsigned char expectedA = A_T;
+    unsigned char expectedC = (seqNumber == 0) ? C_I_0 : C_I_1;
+    unsigned char bcc1[2];
     int state = 0;
-    unsigned char receivedA = 0, receivedC = 0, receivedBCC = 0;
-
-    int tmpSize = destSize * 2 + 16;
+    int tmpSize = MAX_PAYLOAD_SIZE * 2 + 8;
     unsigned char *tmp = malloc(tmpSize);
     int tmpLen = 0;
-    
-    
-    printf("Waiting for frame (A=0x%02X, C=0x%02X) with %ds timeout...\n", expectedA, expectedC, timeoutSeconds);
     
     while (alarmEnabled)
     {
@@ -308,59 +311,48 @@ int readIFrame(LinkLayerRole role, int timeoutSeconds, unsigned char *dest, int 
             if (byte == FLAG) state = 1;
             break;
         case 1: // A
-            if (byte == expectedA) { receivedA = byte; state = 2; }
+            if (byte == expectedA) {
+                bcc1[0] = byte;
+                state = 2;
+            } 
             else if (byte != FLAG) state = 0;
             break;
         case 2: // C
             if (byte == expectedC) {
-                receivedC = byte;
-                state = 3; 
-                }
-            else if (byte == FLAG) state = 1; 
+                bcc1[1] = byte;
+                state = 3;
+            }
+            else if (byte == FLAG) state = 1;
             else state = 0;
             break;
         case 3: // BCC1
-            receivedBCC = byte;
-            if (receivedBCC == BCC1(receivedA, receivedC)) state = 4;
-            else if (byte == FLAG) state = 1; 
+            if (byte == BCC1(bcc1[0], bcc1[1])) state = 4;
+            else if (byte == FLAG) state = 1;
             else state = 0;
             break;
         case 4: //Flag, D and BCC2
             if (byte == FLAG) {
-                destSize = destuffBytes(tmp, tmpLen, dest);
+                int destlen = destuffBytes(tmp, tmpLen, dest);
                 free(tmp);
-                int bcc2 = createBCC2(dest, destSize -1);
-                if(bcc2 != dest[destSize -1]){
+                if(destlen < 1) return -1;
+                int datalen = destlen - 1;
+                int bcc2 = createBCC2(dest, datalen);
+                if(bcc2 != dest[datalen]){
                     printf("BCC2 error\n");
-                    return -2; //error send REJ
+                    return 1; //error send REJ
                 }
-
-                alarm(0);
-                alarmEnabled = FALSE;
-                *dataLength = destSize - 1;
+                *destsize = datalen;
                 return 0; //success send RR
             }
             else{
-                if(tmpLen + 1 > tmpSize){
-                    free(tmp);
-                    printf("Temporary buffer overflow\n");
-                    alarm(0);
-                    alarmEnabled = FALSE;
-                    return -1;
-                }
                 tmp[tmpLen++] = byte;
             }
-            break;
-        default:
-            state = 0;
             break;
         }
     }
 
-    printf("Timeout - no frame received\n");
-    alarm(0);
-    alarmEnabled = FALSE;
-    return -1; 
+    printf("Timeout - send REJ\n");
+    return 1; 
 }
 
 
@@ -373,38 +365,6 @@ int createBCC2 (const unsigned char *data, int dataSize){
 
     return bcc2;
 }
-
-
-int replaceByte(unsigned char byte, unsigned char *res){
-    if(!res) return -1;
-
-    if(byte == FLAG){
-        res[0] = ESC;
-        res[1] = ESC_FLAG;
-        return 2;
-    }
-    else if(byte == ESC){
-        res[0] = ESC;
-        res[1] = ESC_ESC;
-        return 2;
-    }
-    else{
-        res[0] = byte;
-        return 1;
-    }
-    
-    
-}
-
-void setupAlarm() {
-    struct sigaction act = {0};
-    act.sa_handler = &alarmHandler;
-    if (sigaction(SIGALRM, &act, NULL) == -1) {
-        perror("sigaction");
-        exit(1);
-    }
-}
-
 
 int stuffBytes(unsigned char *data, int dataSize, unsigned char *dest){
     int max_size = 2 * dataSize + 8;
@@ -444,5 +404,35 @@ int destuffBytes(unsigned char *data, int dataSize, unsigned char *dest){
 
 }
 
+
+int replaceByte(unsigned char byte, unsigned char *res){
+    if(!res) return -1;
+
+    if(byte == FLAG){
+        res[0] = ESC;
+        res[1] = ESC_FLAG;
+        return 2;
+    }
+    else if(byte == ESC){
+        res[0] = ESC;
+        res[1] = ESC_ESC;
+        return 2;
+    }
+    else{
+        res[0] = byte;
+        return 1;
+    }
+    
+    
+}
+
+void setupAlarm() {
+    struct sigaction act = {0};
+    act.sa_handler = &alarmHandler;
+    if (sigaction(SIGALRM, &act, NULL) == -1) {
+        perror("sigaction");
+        exit(1);
+    }
+}
 
 
