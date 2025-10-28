@@ -9,11 +9,13 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+int createControlPacket(int pos, const unsigned char types[], unsigned char *values[], int lengths[], int nParams, unsigned char *packet);
+
 void applicationLayer(const char *serialPort, const char *role, int baudRate,
                       int nTries, int timeout, const char *filename)
 {
     LinkLayer link_layer;
-    strcpy(link_layer.serialPort = serialPort);
+    strcpy(link_layer.serialPort,serialPort);
     if(strcmp("tx", role) == 0){
         link_layer.role = LlTx;
     } else link_layer.role = LlRx;
@@ -22,14 +24,14 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     link_layer.timeout = timeout;
 
     if (llopen(link_layer) == -1) {
-        return -1;
+        return;
     }
 
     if(link_layer.role == LlTx){
         FILE *file = fopen(filename, "r");
         if(file == NULL) {
-            printf("Can't find file \n")
-            return -1;
+            printf("Can't find file \n");
+            return;
         }
         //2 control packets: first packet sends size of file and file name, the end one sends the same that the start one
         fseek(file, 0L, SEEK_END);
@@ -48,7 +50,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         int packetsize = createControlPacket(1, types, values, lengths, 2, packet);
         if (llwrite(packet, packetsize) == -1) {
             printf("Unable to send START\n");
-            return -1;
+            return;
         }
         free(packet);
 
@@ -61,25 +63,25 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             unsigned char* frame = (unsigned char*) malloc(bytesread);
             fread(frame, sizeof(char), bytesread, file);
 
-            unsigned char *dataPacket = (unsigned char*)malloc(bytesread+3);
+            unsigned char *datapacket = (unsigned char*)malloc(bytesread+3);
             datapacket[0] = 2;
             datapacket[1] = (bytesread) >> 8 & 0xFF;
             datapacket[2] = (bytesread) & 0xFF;
-            memccpy(dataPacket+3, frame, bytesread);
-            if(llwrite(dataPacket,bytesread+3)){
+            memcpy((datapacket+3), frame, bytesread);
+            if(llwrite(datapacket,bytesread+3)){
                 printf("Unable to send DATA\n");
             }
             bytesremaining -=bytesread;
             free(frame);
-            free(dataPacket);     
+            free(datapacket);
         }
 
         printf("Sending End\n");
-
-        int endpacket = createControlPacket(3, types, values, lengths, 2, endpacket);
-        if (llwrite(endpacket, packetsize) == -1) {
-            printf("Unable to send START\n");
-            return -1;
+     unsigned char *endpacket = (unsigned char*)malloc(MAX_PAYLOAD_SIZE);
+        int endpacketsize = createControlPacket(3, types, values, lengths, 2, endpacket);
+        if (llwrite(endpacket, endpacketsize) == -1) {
+            printf("Unable to send end\n");
+            return;
         }
         free(endpacket);
         fclose(file);
@@ -96,7 +98,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             int pos = packet[0];
             if(pos != 1){
                 printf("Expected START control packet\n");
-                return -1;
+                return;
             }
             int filesize = 0;
             char filename[256];
@@ -115,7 +117,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                     i += length;
                 } else {
                     printf("Unknown parameter type\n");
-                    return -1;
+                    return;
                 }
             }
             free(packet);
@@ -127,7 +129,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                 if (packet[0] == 2)
                 {
                     int bytesread = packet[1] << 8 | packet[2];
-                    fwrite(packet + 3, sizeof(char), bytesread, file)
+                    fwrite(packet + 3, sizeof(char), bytesread, file);
                 }
                 else if(packet[0] == 3) //end
                 {
@@ -147,12 +149,12 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                             i += length;
                         } else {
                             printf("Unknown parameter type\n");
-                            return -1;
+                            return;
                         }
                     }
                     if (filesize_end != filesize || strcmp(filename_end, filename) != 0) {
                         printf("Mismatch in END control packet\n");
-                        return -1;
+                        return;
                     }
                     printf("Correct END packet received\n");
                     free(packet);
@@ -166,7 +168,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
 
     }
-    else return -1;
+    else return;
 
     
 

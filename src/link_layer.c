@@ -5,6 +5,7 @@
 #include "utils.h"
 
 #include <signal.h>
+#include <string.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -15,12 +16,18 @@
 
 volatile int alarmEnabled = FALSE;
 volatile int alarmCount = 0;
-volatile int STOP = FALSE;
 static int sequenceNumber = 0;
 
 int sendSupervisionFrame(LinkLayerRole role, unsigned char controlField);
-int waitForSupervisionFrame(LinkLayerRole role, unsigned char expectedC, int timeoutSeconds);
-int sendAndWaitResponse(LinkLayer connectionParameters, unsigned char commandC, unsigned char expectedReplyC);
+int readSupervisionFrame(LinkLayerRole role, unsigned char c);
+int sendIFrame(unsigned char *data, int datasize, int seqNumber);
+int readIFrame(LinkLayerRole role, unsigned char *dest, int *destsize, int seqNumber);
+void alarmHandler(int signal);
+void setupAlarm();
+int replaceByte(unsigned char byte, unsigned char *res);
+int destuffBytes(unsigned char *data, int dataSize, unsigned char *dest);
+int stuffBytes(unsigned char *data, int dataSize, unsigned char *dest);
+int createBCC2 (const unsigned char *data, int dataSize);
 
 
 
@@ -38,7 +45,7 @@ int llopen(LinkLayer connectionParameters)
             if(sendSupervisionFrame(LlTx, C_SET) == -1){
                 return -1;
             }
-            printf("Sended set"'\n');
+            printf("Sended set\n");
 
             alarm(3);
             alarmEnabled = TRUE;
@@ -217,7 +224,7 @@ int readSupervisionFrame(LinkLayerRole role, unsigned char c)
     unsigned char byte, bcc[2];
     
     while (role == LlTx ? alarmEnabled : TRUE) {
-        int res = readByteSerialPort(&byte); 
+        readByteSerialPort(&byte); 
         switch (state) {
             case 0: // Flag
                 if (byte == FLAG) state = 1;
@@ -260,7 +267,8 @@ int readSupervisionFrame(LinkLayerRole role, unsigned char c)
 
 
 
-int sendIFrame(unsigned char *data, int datasize, int seqNumber){
+int sendIFrame(unsigned char *data, int datasize, int seqNumber)
+{
 
     unsigned char tmp[datasize + 1];
     memcpy(tmp, data, datasize);
@@ -426,6 +434,15 @@ int replaceByte(unsigned char byte, unsigned char *res){
     
 }
 
+void alarmHandler(int signal)
+{
+    alarmEnabled = FALSE;
+    alarmCount++;
+
+    printf("Alarm #%d received\n", alarmCount);
+}
+
+
 void setupAlarm() {
     struct sigaction act = {0};
     act.sa_handler = &alarmHandler;
@@ -434,5 +451,6 @@ void setupAlarm() {
         exit(1);
     }
 }
+
 
 
