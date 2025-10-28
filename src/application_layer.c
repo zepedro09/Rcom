@@ -138,12 +138,10 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                     return;
                 }
             }
-            free(packet);
             printf("Receiving file: %s of size %ld bytes\n", filename, filesize);
 
             packetsize = 0;
             while (1) {
-                printf("STUCK HERE\n");
                 while ((packetsize = llread(packet)) == -1);
                 printf("Packet of size %d received\n", packetsize);
                 if (packet[0] == 2)
@@ -177,12 +175,14 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                         return;
                     }
                     printf("Correct END packet received\n");
+                    llread(packet);
                     free(packet);
+                    llclose(link_layer);
+
                 }
             }
             fclose(file);
             free(packet);
-            llclose(link_layer);
         }
 
 

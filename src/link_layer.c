@@ -140,6 +140,7 @@ int llread(unsigned char *packet)
         printf("Sent REJ \n");
     }else if(response == 0){
         if (sendSupervisionFrame(LlRx, RR) == -1) return -1;
+        sequenceNumber = (sequenceNumber + 1) % 2;
         printf("Sent RR \n");
     }else{
         printf("ERROR \n");
@@ -309,6 +310,7 @@ int readIFrame(LinkLayerRole role, unsigned char *dest, int *destsize, int seqNu
     unsigned char *tmp = malloc(tmpSize);
     int tmpLen = 0;
     
+    printf(sequenceNumber == 0 ? "Expecting Ns=0\n" : "Expecting Ns=1\n");
     while (TRUE)
     {
         unsigned char byte;
