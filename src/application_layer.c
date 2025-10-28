@@ -9,10 +9,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-+#include <sys/stat.h>
-+#include <errno.h>
-+#include <limits.h>
-
 int createControlPacket(int pos, const unsigned char types[], unsigned char *values[], int lengths[], int nParams, unsigned char *packet);
 
 void applicationLayer(const char *serialPort, const char *role, int baudRate,
@@ -39,15 +35,25 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         }
         //2 control packets: first packet sends size of file and file name, the end one sends the same that the start one
         fseek(file, 0L, SEEK_END);
-        int filesize = ftell(file);
+        long int filesize = ftell(file);
+        // prepare filesize as minimal big-endian TLV value
+        int nBytes = 0;
+        long temp = filesize;
+        if (temp == 0) nBytes = 1;
+        else {
+            while (temp != 0) { nBytes++; temp >>= 8; }
+        }
+        unsigned char sizeBuf[sizeof(long int)];
+        for (int b = 0; b < nBytes; ++b)
+            sizeBuf[nBytes - 1 - b] = (unsigned char)((filesize >> (8 * b)) & 0xFF);
 
         unsigned char *packet = (unsigned char*)malloc(MAX_PAYLOAD_SIZE);
         unsigned char types[2] = {0, 1};
         unsigned char *values[2];
         int lengths[2];
 
-        values[0] = (unsigned char *) &filesize;
-        lengths[0] = sizeof(filesize);
+        values[0] = sizeBuf;
+        lengths[0] = nBytes;
         values[1] = (unsigned char *) filename;
         lengths[1] = strlen(filename);
 
@@ -108,20 +114,24 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                 printf("Expected START control packet\n");
                 return;
             }
-            int filesize = 0;
+            long int filesize = 0;
             char filename[256];
             for(int i =1; i < packetsize; ){
                 unsigned char type = packet[i++];
                 unsigned char length = packet[i++];
                 if(type == 0){ //size
-                    for(int j =0; j < length; j++){
-                        filesize = (filesize << 8) | packet[i + j];
+                    // parse big-endian TLV bytes into long int safely
+                    unsigned long long acc = 0;
+                    if (length < 1 || length > (int)sizeof(long int)) { printf("Invalid size length\n"); return; }
+                    for (int j = 0; j < length; ++j) {
+                        acc = (acc << 8) | (unsigned char)packet[i + j];
                     }
+                    filesize = (long int)acc;
                     i += length;
                 } else if (type == 1){ //filename
                     memcpy(filename, &packet[i], length);
                     filename[length] = '\0';
-                    file = fopen(filename, "w");
+                    file = fopen("penguin-recieved.gif", "w");
                     i += length;
                 } else {
                     printf("Unknown parameter type\n");
@@ -129,11 +139,13 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                 }
             }
             free(packet);
-            printf("Receiving file: %s of size %d bytes\n", filename, filesize);
+            printf("Receiving file: %s of size %ld bytes\n", filename, filesize);
 
             packetsize = 0;
             while (1) {
+                printf("STUCK HERE\n");
                 while ((packetsize = llread(packet)) == -1);
+                printf("Packet of size %d received\n", packetsize);
                 if (packet[0] == 2)
                 {
                     int bytesread = packet[1] << 8 | packet[2];
