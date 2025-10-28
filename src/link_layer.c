@@ -216,7 +216,7 @@ int readSupervisionFrame(LinkLayerRole role, unsigned char c)
     int state = 0;
     unsigned char byte, bcc[2];
     
-    while (alarmEnabled) {
+    while (role == LlTx ? alarmEnabled : TRUE) {
         int res = readByteSerialPort(&byte); 
         switch (state) {
             case 0: // Flag
