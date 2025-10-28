@@ -9,6 +9,10 @@
 #include <stdlib.h>
 #include <unistd.h>
 
++#include <sys/stat.h>
++#include <errno.h>
++#include <limits.h>
+
 int createControlPacket(int pos, const unsigned char types[], unsigned char *values[], int lengths[], int nParams, unsigned char *packet);
 
 void applicationLayer(const char *serialPort, const char *role, int baudRate,
@@ -48,6 +52,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         lengths[1] = strlen(filename);
 
         int packetsize = createControlPacket(1, types, values, lengths, 2, packet);
+        printf("Sending Start, %d bytes\n", packetsize);
         if (llwrite(packet, packetsize) == -1) {
             printf("Unable to send START\n");
             return;
@@ -70,6 +75,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             memcpy((datapacket+3), frame, bytesread);
             if(llwrite(datapacket,bytesread+3)){
                 printf("Unable to send DATA\n");
+                return;
             }
             bytesremaining -=bytesread;
             free(frame);
@@ -77,7 +83,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         }
 
         printf("Sending End\n");
-     unsigned char *endpacket = (unsigned char*)malloc(MAX_PAYLOAD_SIZE);
+        unsigned char *endpacket = (unsigned char*)malloc(MAX_PAYLOAD_SIZE);
         int endpacketsize = createControlPacket(3, types, values, lengths, 2, endpacket);
         if (llwrite(endpacket, endpacketsize) == -1) {
             printf("Unable to send end\n");
@@ -91,7 +97,9 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     {
         FILE *file;
         unsigned char *packet = malloc(MAX_PAYLOAD_SIZE+100);
-        int packetsize = llread(packet);
+        int packetsize = 0;
+        printf("Waiting for control packet\n");
+        while ((packetsize = llread(packet)) == -1);
         if(packetsize == -1){
             printf("Error reading control packet\n");
         }else{
@@ -162,7 +170,6 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             }
             fclose(file);
             free(packet);
-            free(filename);
             llclose(link_layer);
         }
 
@@ -183,6 +190,7 @@ int createControlPacket(int pos, const unsigned char types[], unsigned char *val
         packet[packetLen++] = types[i];
         packet[packetLen++] = (unsigned char) lengths[i];
         memcpy(&packet[packetLen], values[i], lengths[i]);
+        packetLen += lengths[i];
     }
 
     return packetLen;

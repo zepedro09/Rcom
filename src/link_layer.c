@@ -18,6 +18,7 @@ volatile int alarmEnabled = FALSE;
 volatile int alarmCount = 0;
 static int sequenceNumber = 0;
 
+
 int sendSupervisionFrame(LinkLayerRole role, unsigned char controlField);
 int readSupervisionFrame(LinkLayerRole role, unsigned char c);
 int sendIFrame(unsigned char *data, int datasize, int seqNumber);
@@ -41,23 +42,22 @@ int llopen(LinkLayer connectionParameters)
 
     if (connectionParameters.role == LlTx) {
         setupAlarm();
-        while (alarmCount < 3) {
+        while (alarmCount < connectionParameters.nRetransmissions) {
             if(sendSupervisionFrame(LlTx, C_SET) == -1){
                 return -1;
             }
             printf("Sended set\n");
-
             alarm(3);
             alarmEnabled = TRUE;
             
             int UA = FALSE;
 
-            while (alarmEnabled && UA)
+            while (alarmEnabled && !UA)
             {
+                printf("Waiting for UA frame...\n");
                 if(readSupervisionFrame(LlTx, C_UA)){
                     printf("\nReceived UA frame <-\n");
-                    UA = TRUE;
-                    
+                    UA = TRUE; 
                 }
             }
             if(UA){
@@ -65,17 +65,19 @@ int llopen(LinkLayer connectionParameters)
                 alarmEnabled = FALSE;
                 alarmCount = 0;
                 return 0;
-            }  
-            alarmCount = 0;
-            return -1;
+            }             
         }
+        alarmCount = 0;
+        return -1;
     } else if (connectionParameters.role == LlRx) {
         if (readSupervisionFrame(LlRx, C_SET) == -1) {
             closeSerialPort();
             return -1;
         }
-        
+
+        printf("Received SET frame\n");
         if (sendSupervisionFrame(LlRx, C_UA) == -1) {
+            
             closeSerialPort();
             return -1;
         }
@@ -307,7 +309,7 @@ int readIFrame(LinkLayerRole role, unsigned char *dest, int *destsize, int seqNu
     unsigned char *tmp = malloc(tmpSize);
     int tmpLen = 0;
     
-    while (alarmEnabled)
+    while (TRUE)
     {
         unsigned char byte;
         int res = readByteSerialPort(&byte);
