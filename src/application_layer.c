@@ -67,6 +67,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
         fseek(file, 0L, SEEK_SET);
         int bytesremaining = filesize;
+        printf("Starting file transfer of %ld bytes\n", filesize);
         while (bytesremaining > 0)
         {
             printf("Sending data\n");
@@ -84,6 +85,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                 return;
             }
             bytesremaining -=bytesread;
+            printf("%d bytes remaining\n", bytesremaining);
             free(frame);
             free(datapacket);
         }
@@ -131,7 +133,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                 } else if (type == 1){ //filename
                     memcpy(filename, &packet[i], length);
                     filename[length] = '\0';
-                    file = fopen("penguin-recieved.gif", "w");
+                    file = fopen("penguin-recieved.gif", "wb");
                     i += length;
                 } else {
                     printf("Unknown parameter type\n");
@@ -143,10 +145,10 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             packetsize = 0;
             while (1) {
                 while ((packetsize = llread(packet)) == -1);
-                printf("Packet of size %d received\n", packetsize);
                 if (packet[0] == 2)
                 {
                     int bytesread = packet[1] << 8 | packet[2];
+                    printf("Writing %d bytes to file\n", bytesread);
                     fwrite(packet + 3, sizeof(char), bytesread, file);
                 }
                 else if(packet[0] == 3) //end
@@ -175,10 +177,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                         return;
                     }
                     printf("Correct END packet received\n");
-                    llread(packet);
-                    free(packet);
-                    llclose(link_layer);
-
+                    break;
                 }
             }
             fclose(file);
@@ -207,4 +206,7 @@ int createControlPacket(int pos, const unsigned char types[], unsigned char *val
 
     return packetLen;
 }
+
+
+
 
