@@ -10,6 +10,8 @@
 #include <unistd.h>
 #include <stdlib.h>
 
+
+
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
 
@@ -19,9 +21,10 @@ volatile int alarmCount = 0;
 static int sequenceNumber = 0;
 
 
+
 int sendSupervisionFrame(LinkLayerRole role, unsigned char controlField);
 int readSupervisionFrame(LinkLayerRole role, unsigned char c);
-int sendIFrame(unsigned char *data, int datasize, int seqNumber);
+int sendIFrame(const unsigned char *data, int datasize, int seqNumber);
 int readIFrame(LinkLayerRole role, unsigned char *dest, int *destsize, int seqNumber);
 void alarmHandler(int signal);
 void setupAlarm();
@@ -55,7 +58,7 @@ int llopen(LinkLayer connectionParameters)
             while (alarmEnabled && !UA)
             {
                 printf("Waiting for UA frame...\n");
-                if(readSupervisionFrame(LlTx, C_UA)){
+                if(readSupervisionFrame(LlTx, C_UA) != -1){
                     printf("\nReceived UA frame <-\n");
                     UA = TRUE; 
                 }
@@ -128,26 +131,31 @@ int llwrite(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 // LLREAD
 ////////////////////////////////////////////////
+
 int llread(unsigned char *packet)
-{   
+{
     unsigned char RR = (sequenceNumber == 0) ? C_RR_1 : C_RR_0;
     unsigned char REJ = (sequenceNumber == 0) ? C_REJ_0 : C_REJ_1;
     int packetsizeval = 0;
     int *packetsize = &packetsizeval;
+ 
     int response = readIFrame(LlRx, packet, packetsize, sequenceNumber);
+ 
     if(response == 1){
         if (sendSupervisionFrame(LlRx, REJ) == -1) return -1;
         printf("Sent REJ \n");
+        return -1;
     }else if(response == 0){
         if (sendSupervisionFrame(LlRx, RR) == -1) return -1;
         sequenceNumber = (sequenceNumber + 1) % 2;
         printf("Sent RR \n");
+        return *packetsize;
     }else{
         printf("ERROR \n");
         return -1;
     }
-    return *packetsize;
 }
+
 
 ////////////////////////////////////////////////
 // LLCLOSE
@@ -244,6 +252,10 @@ int readSupervisionFrame(LinkLayerRole role, unsigned char c)
                 if(byte == c)
                 {
                     bcc[1] = byte;
+                    if(byte != c){
+                        printf("Wrong c\n");
+                        break;
+                    } 
                     state = 3;
                 }
                 else state = 0;
@@ -270,7 +282,7 @@ int readSupervisionFrame(LinkLayerRole role, unsigned char c)
 
 
 
-int sendIFrame(unsigned char *data, int datasize, int seqNumber)
+int sendIFrame(const unsigned char *data, int datasize, int seqNumber)
 {
 
     unsigned char tmp[datasize + 1];
@@ -316,7 +328,6 @@ int readIFrame(LinkLayerRole role, unsigned char *dest, int *destsize, int seqNu
         unsigned char byte;
         int res = readByteSerialPort(&byte);
         if (res <= 0) continue;
-
         switch (state)
         {
         case 0: // Flag
@@ -396,7 +407,6 @@ int stuffBytes(unsigned char *data, int dataSize, unsigned char *dest){
 }
 
 int destuffBytes(unsigned char *data, int dataSize, unsigned char *dest){
-    int min_size = dataSize/2 -1;
 
     if (!data || !dest || dataSize < 0) return -1;
 

@@ -133,7 +133,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                 } else if (type == 1){ //filename
                     memcpy(filename, &packet[i], length);
                     filename[length] = '\0';
-                    file = fopen("penguin-recieved.gif", "wb");
+                    file = fopen("penguin-received.gif", "wb");
                     i += length;
                 } else {
                     printf("Unknown parameter type\n");
@@ -183,13 +183,8 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             fclose(file);
             free(packet);
         }
-
-
     }
     else return;
-
-    
-
 }
 int createControlPacket(int pos, const unsigned char types[], unsigned char *values[], int lengths[],
                          int nParams, unsigned char *packet)
@@ -206,7 +201,4 @@ int createControlPacket(int pos, const unsigned char types[], unsigned char *val
 
     return packetLen;
 }
-
-
-
 
