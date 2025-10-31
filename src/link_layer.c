@@ -10,6 +10,14 @@
 #include <unistd.h>
 #include <stdlib.h>
 
+#include <stdlib.h> // Para rand() e srand()
+#include <time.h>   // Para time()
+
+/*  
+static int random_initialized = 0; 
+#define REJ_PROBABILITY 5
+*/
+
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
 
@@ -19,9 +27,10 @@ volatile int alarmCount = 0;
 static int sequenceNumber = 0;
 
 
+
 int sendSupervisionFrame(LinkLayerRole role, unsigned char controlField);
 int readSupervisionFrame(LinkLayerRole role, unsigned char c);
-int sendIFrame(unsigned char *data, int datasize, int seqNumber);
+int sendIFrame(const unsigned char *data, int datasize, int seqNumber);
 int readIFrame(LinkLayerRole role, unsigned char *dest, int *destsize, int seqNumber);
 void alarmHandler(int signal);
 void setupAlarm();
@@ -55,7 +64,7 @@ int llopen(LinkLayer connectionParameters)
             while (alarmEnabled && !UA)
             {
                 printf("Waiting for UA frame...\n");
-                if(readSupervisionFrame(LlTx, C_UA)){
+                if(readSupervisionFrame(LlTx, C_UA) != -1){
                     printf("\nReceived UA frame <-\n");
                     UA = TRUE; 
                 }
@@ -128,25 +137,82 @@ int llwrite(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 // LLREAD
 ////////////////////////////////////////////////
+
 int llread(unsigned char *packet)
-{   
+{
     unsigned char RR = (sequenceNumber == 0) ? C_RR_1 : C_RR_0;
     unsigned char REJ = (sequenceNumber == 0) ? C_REJ_0 : C_REJ_1;
     int packetsizeval = 0;
     int *packetsize = &packetsizeval;
+ 
     int response = readIFrame(LlRx, packet, packetsize, sequenceNumber);
+ 
     if(response == 1){
         if (sendSupervisionFrame(LlRx, REJ) == -1) return -1;
         printf("Sent REJ \n");
+        return -1;
     }else if(response == 0){
         if (sendSupervisionFrame(LlRx, RR) == -1) return -1;
+        sequenceNumber = (sequenceNumber + 1) % 2;
         printf("Sent RR \n");
+        return *packetsize;
     }else{
         printf("ERROR \n");
         return -1;
     }
+}
+
+/*
+int llread(unsigned char *packet)
+{
+    // Inicializa o gerador aleatório na primeira chamada
+    if (!random_initialized) {
+        srand(time(NULL));
+        random_initialized = 1;
+    }
+    
+    unsigned char RR = (sequenceNumber == 0) ? C_RR_1 : C_RR_0;
+    unsigned char REJ = (sequenceNumber == 0) ? C_REJ_0 : C_REJ_1;
+    int packetsizeval = 0;
+    int *packetsize = &packetsizeval;
+    
+    // Tenta ler o I-Frame
+    int response = readIFrame(LlRx, packet, packetsize, sequenceNumber);
+    
+    // --- LÓGICA DE INJEÇÃO DE ERRO ---
+    int inject_rej = 0;
+    
+    if (response == 0) { // O quadro foi lido corretamente (sem BCC2 ou Ns errado)
+        // Se o número aleatório for 0, injeta REJ (1/REJ_PROBABILITY chance)
+        if ((rand() % REJ_PROBABILITY) == 0) {
+            inject_rej = 1;
+        }
+    }
+    // ----------------------------------
+
+    if(response == 1 || inject_rej){ // Se houve erro REAL (1) ou se injetamos erro (inject_rej)
+        if (sendSupervisionFrame(LlRx, REJ) == -1) return -1;
+        printf("Sent REJ (Injected: %s) \n", inject_rej ? "YES" : "NO");
+        
+        // Se o erro foi injetado, NÃO avançamos o sequenceNumber, forçando retransmissão
+        if (inject_rej) {
+            printf("[TEST] 😈 Injetado REJ para forçar retransmissão!\n");
+            return -1;
+        }
+        
+    } else if(response == 0){ // Sucesso REAL
+        if (sendSupervisionFrame(LlRx, RR) == -1) return -1;
+        sequenceNumber = (sequenceNumber + 1) % 2;
+        printf("Sent RR \n");
+        
+    } else { // Outro erro (e.g., llread retorna -1)
+        printf("ERROR \n");
+        return -1;
+    }
+    
     return *packetsize;
 }
+*/
 
 ////////////////////////////////////////////////
 // LLCLOSE
@@ -168,12 +234,11 @@ int llclose(LinkLayer connectionParameters)
             
             int DISC = FALSE;
 
-            while (alarmEnabled && DISC)
+            while (alarmEnabled && !DISC)
             {
-                if(readSupervisionFrame(LlTx, C_DISC)){
-                    printf("\nReceived UA frame <-\n");
+                if(readSupervisionFrame(LlTx, C_DISC) != -1){
+                    printf("\nReceived DISC frame <-\n");
                     DISC = TRUE;
-                    
                 }
             }
             if(DISC){
@@ -186,24 +251,22 @@ int llclose(LinkLayer connectionParameters)
                 printf("Sent UA frame\n");
                 break;
             }  
-            alarmCount = 0;
             return -1;
         }
     } else if (connectionParameters.role == LlRx) {
-        if (readSupervisionFrame(LlRx, C_SET) == -1) {
-
+        if (readSupervisionFrame(LlRx, C_DISC) == -1) {
             return -1;
         }
         printf("Received DISC frame\n");
         
-        if (sendSupervisionFrame(LlRx, C_UA) == -1) {
+        if (sendSupervisionFrame(LlRx, C_DISC) == -1) {
             return -1;
         }
         printf("Sent UA frame\n");
 
     }
 
-    printf("Connection closed! \n Bye, Bye!! \n");
+    printf("Connection closed! \nBye, Bye!! \n");
     return closeSerialPort();
 }
 
@@ -243,6 +306,10 @@ int readSupervisionFrame(LinkLayerRole role, unsigned char c)
                 if(byte == c)
                 {
                     bcc[1] = byte;
+                    if(byte != c){
+                        printf("Wrong c\n");
+                        break;
+                    } 
                     state = 3;
                 }
                 else state = 0;
@@ -269,7 +336,7 @@ int readSupervisionFrame(LinkLayerRole role, unsigned char c)
 
 
 
-int sendIFrame(unsigned char *data, int datasize, int seqNumber)
+int sendIFrame(const unsigned char *data, int datasize, int seqNumber)
 {
 
     unsigned char tmp[datasize + 1];
@@ -309,12 +376,12 @@ int readIFrame(LinkLayerRole role, unsigned char *dest, int *destsize, int seqNu
     unsigned char *tmp = malloc(tmpSize);
     int tmpLen = 0;
     
+    printf(sequenceNumber == 0 ? "Expecting Ns=0\n" : "Expecting Ns=1\n");
     while (TRUE)
     {
         unsigned char byte;
         int res = readByteSerialPort(&byte);
         if (res <= 0) continue;
-
         switch (state)
         {
         case 0: // Flag
@@ -394,7 +461,6 @@ int stuffBytes(unsigned char *data, int dataSize, unsigned char *dest){
 }
 
 int destuffBytes(unsigned char *data, int dataSize, unsigned char *dest){
-    int min_size = dataSize/2 -1;
 
     if (!data || !dest || dataSize < 0) return -1;
 
