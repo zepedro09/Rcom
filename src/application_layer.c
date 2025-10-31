@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 int createControlPacket(int pos, const unsigned char types[], unsigned char *values[], int lengths[], int nParams, unsigned char *packet);
+int readControlpacket(int packetsize, unsigned char *packet, long int *filesize, char *name);
 
 void applicationLayer(const char *serialPort, const char *role, int baudRate,
                       int nTries, int timeout, const char *filename)
@@ -119,28 +120,11 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             }
             long int filesize = 0;
             char name[256];
-            for(int i =1; i < packetsize; ){
-                unsigned char type = packet[i++];
-                unsigned char length = packet[i++];
-                if(type == 0){ //size
-                    // parse big-endian TLV bytes into long int safely
-                    unsigned long long acc = 0;
-                    if (length < 1 || length > (int)sizeof(long int)) { printf("Invalid size length\n"); return; }
-                    for (int j = 0; j < length; ++j) {
-                        acc = (acc << 8) | (unsigned char)packet[i + j];
-                    }
-                    filesize = (long int)acc;
-                    i += length;
-                } else if (type == 1){ //filename
-                    memcpy(name, &packet[i], length);
-                    name[length] = '\0';
-                    file = fopen(filename, "wb");
-                    i += length;
-                } else {
-                    printf("Unknown parameter type\n");
-                    return;
-                }
+            if(readControlpacket(packetsize, packet, &filesize, name) == -1){
+                printf("Error reading START control packet\n");
+                return;
             }
+            file = fopen(filename, "wb");
             printf("Receiving file: %s of size %ld bytes\n", name, filesize);
 
             packetsize = 0;
@@ -154,24 +138,11 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                 }
                 else if(packet[0] == 3) //end
                 {
-                    int filesize_end = 0;
+                    long int filesize_end = 0;
                     char filename_end[256];
-                    for(int i =1; i < packetsize; ){
-                        unsigned char type = packet[i++];
-                        unsigned char length = packet[i++];
-                        if(type == 0){ //size
-                            for(int j =0; j < length; j++){
-                                filesize_end = (filesize_end << 8) | packet[i + j];
-                            }
-                            i += length;
-                        } else if (type == 1){ //filename   
-                            memcpy(filename_end, &packet[i], length);
-                            filename_end[length] = '\0';
-                            i += length;
-                        } else {
-                            printf("Unknown parameter type\n");
-                            return;
-                        }
+                    if(readControlpacket(packetsize, packet, &filesize_end, filename_end) == -1){
+                        printf("Error reading END control packet\n");
+                        return;
                     }
                     if (filesize_end != filesize || strcmp(filename_end, name) != 0) {
                         printf("Mismatch in END control packet\n");
@@ -204,3 +175,33 @@ int createControlPacket(int pos, const unsigned char types[], unsigned char *val
     return packetLen;
 }
 
+
+
+int readControlpacket(int packetsize, unsigned char *packet, long int *filesize, char *name)
+{
+    for(int i =1; i < packetsize; ){
+        unsigned char type = packet[i++];
+        unsigned char length = packet[i++];
+        if(type == 0){ //size
+            unsigned long long acc = 0;
+            if (length < 1 || length > (int)sizeof(long int))
+            {
+                printf("Invalid size length\n");
+                return -1;
+            }
+            for (int j = 0; j < length; ++j) {
+                acc = (acc << 8) | (unsigned char)packet[i + j];
+            }
+            *filesize = (long int)acc;
+            i += length;
+        } else if (type == 1){ //filename
+            memcpy(name, &packet[i], length);
+            name[length] = '\0';
+            i += length;
+        } else {
+            printf("Unknown parameter type\n");
+            return -1;
+        }
+    }
+    return 0;
+}

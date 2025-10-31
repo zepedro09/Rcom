@@ -262,7 +262,7 @@ int llclose(LinkLayer connectionParameters)
         if (sendSupervisionFrame(LlRx, C_DISC) == -1) {
             return -1;
         }
-        printf("Sent UA frame\n");
+        printf("Sent DISC frame\n");
 
     }
 
