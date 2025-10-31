@@ -28,7 +28,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     }
 
     if(link_layer.role == LlTx){
-        FILE *file = fopen(filename, "r");
+        FILE *file = fopen(filename, "rb");
         if(file == NULL) {
             printf("Can't find file \n");
             return;
@@ -97,6 +97,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             printf("Unable to send end\n");
             return;
         }
+        printf("File transfer complete\n");
         free(endpacket);
         fclose(file);
         llclose(link_layer);
@@ -117,7 +118,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                 return;
             }
             long int filesize = 0;
-            char filename[256];
+            char name[256];
             for(int i =1; i < packetsize; ){
                 unsigned char type = packet[i++];
                 unsigned char length = packet[i++];
@@ -131,16 +132,16 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                     filesize = (long int)acc;
                     i += length;
                 } else if (type == 1){ //filename
-                    memcpy(filename, &packet[i], length);
-                    filename[length] = '\0';
-                    file = fopen("penguin-received.gif", "wb");
+                    memcpy(name, &packet[i], length);
+                    name[length] = '\0';
+                    file = fopen(filename, "wb");
                     i += length;
                 } else {
                     printf("Unknown parameter type\n");
                     return;
                 }
             }
-            printf("Receiving file: %s of size %ld bytes\n", filename, filesize);
+            printf("Receiving file: %s of size %ld bytes\n", name, filesize);
 
             packetsize = 0;
             while (1) {
@@ -172,7 +173,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                             return;
                         }
                     }
-                    if (filesize_end != filesize || strcmp(filename_end, filename) != 0) {
+                    if (filesize_end != filesize || strcmp(filename_end, name) != 0) {
                         printf("Mismatch in END control packet\n");
                         return;
                     }
