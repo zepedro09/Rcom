@@ -177,11 +177,12 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                         return;
                     }
                     printf("Correct END packet received\n");
+                    fclose(file);
+                    free(packet);
+                    llclose(link_layer);
                     break;
                 }
             }
-            fclose(file);
-            free(packet);
         }
     }
     else return;

@@ -13,8 +13,10 @@
 #include <stdlib.h> // Para rand() e srand()
 #include <time.h>   // Para time()
 
+/*  
 static int random_initialized = 0; 
 #define REJ_PROBABILITY 5
+*/
 
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
@@ -232,12 +234,11 @@ int llclose(LinkLayer connectionParameters)
             
             int DISC = FALSE;
 
-            while (alarmEnabled && DISC)
+            while (alarmEnabled && !DISC)
             {
-                if(readSupervisionFrame(LlTx, C_DISC)){
-                    printf("\nReceived UA frame <-\n");
+                if(readSupervisionFrame(LlTx, C_DISC) != -1){
+                    printf("\nReceived DISC frame <-\n");
                     DISC = TRUE;
-                    
                 }
             }
             if(DISC){
@@ -250,24 +251,22 @@ int llclose(LinkLayer connectionParameters)
                 printf("Sent UA frame\n");
                 break;
             }  
-            alarmCount = 0;
             return -1;
         }
     } else if (connectionParameters.role == LlRx) {
-        if (readSupervisionFrame(LlRx, C_SET) == -1) {
-
+        if (readSupervisionFrame(LlRx, C_DISC) == -1) {
             return -1;
         }
         printf("Received DISC frame\n");
         
-        if (sendSupervisionFrame(LlRx, C_UA) == -1) {
+        if (sendSupervisionFrame(LlRx, C_DISC) == -1) {
             return -1;
         }
         printf("Sent UA frame\n");
 
     }
 
-    printf("Connection closed! \n Bye, Bye!! \n");
+    printf("Connection closed! \nBye, Bye!! \n");
     return closeSerialPort();
 }
 
