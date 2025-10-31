@@ -34,10 +34,8 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             printf("Can't find file \n");
             return;
         }
-        //2 control packets: first packet sends size of file and file name, the end one sends the same that the start one
         fseek(file, 0L, SEEK_END);
         long int filesize = ftell(file);
-        // prepare filesize as minimal big-endian TLV value
         int nBytes = 0;
         long temp = filesize;
         if (temp == 0) nBytes = 1;
@@ -136,7 +134,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                     printf("Writing %d bytes to file\n", bytesread);
                     fwrite(packet + 3, sizeof(char), bytesread, file);
                 }
-                else if(packet[0] == 3) //end
+                else if(packet[0] == 3) 
                 {
                     long int filesize_end = 0;
                     char filename_end[256];
@@ -182,7 +180,7 @@ int readControlpacket(int packetsize, unsigned char *packet, long int *filesize,
     for(int i =1; i < packetsize; ){
         unsigned char type = packet[i++];
         unsigned char length = packet[i++];
-        if(type == 0){ //size
+        if(type == 0){ 
             unsigned long long acc = 0;
             if (length < 1 || length > (int)sizeof(long int))
             {
@@ -194,7 +192,7 @@ int readControlpacket(int packetsize, unsigned char *packet, long int *filesize,
             }
             *filesize = (long int)acc;
             i += length;
-        } else if (type == 1){ //filename
+        } else if (type == 1){ 
             memcpy(name, &packet[i], length);
             name[length] = '\0';
             i += length;

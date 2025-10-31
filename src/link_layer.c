@@ -10,10 +10,10 @@
 #include <unistd.h>
 #include <stdlib.h>
 
+
+/*
 #include <stdlib.h> // Para rand() e srand()
 #include <time.h>   // Para time()
-
-/*  
 static int random_initialized = 0; 
 #define REJ_PROBABILITY 5
 */
@@ -137,6 +137,7 @@ int llwrite(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 // LLREAD
 ////////////////////////////////////////////////
+
 
 int llread(unsigned char *packet)
 {
