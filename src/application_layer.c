@@ -27,7 +27,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     if (llopen(link_layer) == -1) {
         return;
     }
-
+    printf("\nConnection opened successfully\n");
     if(link_layer.role == LlTx){
         FILE *file = fopen(filename, "rb");
         if(file == NULL) {
@@ -57,7 +57,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         lengths[1] = strlen(filename);
 
         int packetsize = createControlPacket(1, types, values, lengths, 2, packet);
-        printf("Sending Start, %d bytes\n", packetsize);
+        printf("\nSending Start, %d bytes\n", packetsize);
         if (llwrite(packet, packetsize) == -1) {
             printf("Unable to send START\n");
             return;
@@ -88,15 +88,15 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             free(frame);
             free(datapacket);
         }
-
-        printf("Sending End\n");
+        printf("File transfer complete\n");
+        printf("\nSending End\n");
         unsigned char *endpacket = (unsigned char*)malloc(MAX_PAYLOAD_SIZE);
         int endpacketsize = createControlPacket(3, types, values, lengths, 2, endpacket);
         if (llwrite(endpacket, endpacketsize) == -1) {
             printf("Unable to send end\n");
             return;
         }
-        printf("File transfer complete\n");
+        
         free(endpacket);
         fclose(file);
         llclose(link_layer);
@@ -106,7 +106,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         FILE *file;
         unsigned char *packet = malloc(MAX_PAYLOAD_SIZE+100);
         int packetsize = 0;
-        printf("Waiting for control packet\n");
+        printf("\nWaiting for control packet\n");
         while ((packetsize = llread(packet)) == -1);
         if(packetsize == -1){
             printf("Error reading control packet\n");
@@ -123,7 +123,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                 return;
             }
             file = fopen(filename, "wb");
-            printf("Receiving file: %s of size %ld bytes\n", name, filesize);
+            printf("\nReceiving file: %s of size %ld bytes\n", name, filesize);
 
             packetsize = 0;
             while (1) {

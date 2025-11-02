@@ -46,7 +46,7 @@ int llopen(LinkLayer connectionParameters){
             if(sendSupervisionFrame(LlTx, C_SET) == -1){
                 return -1;
             }
-            printf("Sended set\n");
+            printf("\nSended set\n");
             alarm(3);
             alarmEnabled = TRUE;
             
@@ -56,7 +56,6 @@ int llopen(LinkLayer connectionParameters){
             {
                 printf("Waiting for UA frame...\n");
                 if(readSupervisionFrame(LlTx, C_UA) != -1){
-                    printf("\nReceived UA frame <-\n");
                     UA = TRUE; 
                 }
             }
@@ -75,14 +74,13 @@ int llopen(LinkLayer connectionParameters){
             return -1;
         }
 
-        printf("Received SET frame\n");
         if (sendSupervisionFrame(LlRx, C_UA) == -1) {
             
             closeSerialPort();
             return -1;
         }
         
-        printf("Connection established! \n");
+        printf("\nConnection established! \n");
         return 0;
     }
 
@@ -107,7 +105,7 @@ int llwrite(const unsigned char *buf, int bufSize){
         {
             if(readSupervisionFrame(LlTx, RR) == 0) 
             {
-                printf("Response received successfully!\n");
+                printf("Response received successfully!\n\n");
                 alarm(0); 
                 alarmEnabled = FALSE;
                 alarmCount = 0;
@@ -139,12 +137,12 @@ int llread(unsigned char *packet){
  
     if(response == 1){
         if (sendSupervisionFrame(LlRx, REJ) == -1) return -1;
-        printf("Sent REJ \n");
+        printf("Sent REJ \n\n");
         return -1;
     }else if(response == 0){
         if (sendSupervisionFrame(LlRx, RR) == -1) return -1;
         sequenceNumber = (sequenceNumber + 1) % 2;
-        printf("Sent RR \n");
+        printf("Sent RR \n\n");
         return *packetsize;
     }else{
         printf("ERROR \n");
@@ -160,6 +158,7 @@ int llclose(LinkLayer connectionParameters){
     if (openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate) == -1) 
         return -1;
 
+    printf("\nClosing connection...\n");
     if (connectionParameters.role == LlTx) {
         while (alarmCount < connectionParameters.nRetransmissions) {
             if(sendSupervisionFrame(LlTx, C_DISC) == -1){
@@ -175,7 +174,6 @@ int llclose(LinkLayer connectionParameters){
             while (alarmEnabled && !DISC)
             {
                 if(readSupervisionFrame(LlTx, C_DISC) != -1){
-                    printf("\nReceived DISC frame <-\n");
                     DISC = TRUE;
                 }
             }
@@ -256,7 +254,10 @@ int readSupervisionFrame(LinkLayerRole role, unsigned char c){
                 break;
             case 4: //Flag
                 if (byte == FLAG) {
-                    printf("Frame received (A=0x%02X, C=0x%02X)\n", bcc[0], bcc[1]);
+                    printf("\n");
+                    if(bcc[1] == C_UA) printf("UA frame received <-\n");
+                    if(bcc[1] == C_SET) printf("SET frame received <-\n");
+                    if(bcc[1] == C_DISC) printf("DISC frame received <-\n");
                     return 0;
                 } 
                 else state = 0;
@@ -441,7 +442,7 @@ void alarmHandler(int signal)
     alarmEnabled = FALSE;
     alarmCount++;
 
-    printf("Alarm #%d received\n", alarmCount);
+    printf("\nAlarm #%d received\n", alarmCount);
 }
 
 
