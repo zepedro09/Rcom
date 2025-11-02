@@ -175,8 +175,7 @@ int createControlPacket(int pos, const unsigned char types[], unsigned char *val
 
 
 
-int readControlpacket(int packetsize, unsigned char *packet, long int *filesize, char *name)
-{
+int readControlpacket(int packetsize, unsigned char *packet, long int *filesize, char *name){
     for(int i =1; i < packetsize; ){
         unsigned char type = packet[i++];
         unsigned char length = packet[i++];

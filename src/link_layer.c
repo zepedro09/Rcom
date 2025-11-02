@@ -36,8 +36,7 @@ int createBCC2 (const unsigned char *data, int dataSize);
 ////////////////////////////////////////////////
 // LLOPEN
 ////////////////////////////////////////////////
-int llopen(LinkLayer connectionParameters)
-{
+int llopen(LinkLayer connectionParameters){
     if (openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate) == -1) 
         return -1;
 
@@ -93,8 +92,7 @@ int llopen(LinkLayer connectionParameters)
 ////////////////////////////////////////////////
 // LLWRITE
 ////////////////////////////////////////////////
-int llwrite(const unsigned char *buf, int bufSize)
-{
+int llwrite(const unsigned char *buf, int bufSize){
     while (alarmCount < 3) {
         if (sendIFrame(buf, bufSize, sequenceNumber) == -1) {
             return -1;
@@ -131,8 +129,7 @@ int llwrite(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 
 
-int llread(unsigned char *packet)
-{
+int llread(unsigned char *packet){
     unsigned char RR = (sequenceNumber == 0) ? C_RR_1 : C_RR_0;
     unsigned char REJ = (sequenceNumber == 0) ? C_REJ_0 : C_REJ_1;
     int packetsizeval = 0;
@@ -159,8 +156,7 @@ int llread(unsigned char *packet)
 ////////////////////////////////////////////////
 // LLCLOSE
 ////////////////////////////////////////////////
-int llclose(LinkLayer connectionParameters)
-{
+int llclose(LinkLayer connectionParameters){
     if (openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate) == -1) 
         return -1;
 
@@ -213,8 +209,7 @@ int llclose(LinkLayer connectionParameters)
 }
 
 
-int sendSupervisionFrame(LinkLayerRole role, unsigned char controlField)
-{
+int sendSupervisionFrame(LinkLayerRole role, unsigned char controlField){
     unsigned char sendA = (role == LlTx) ? A_T : A_R;
     unsigned char frame[5];
     frame[0] = FLAG;
@@ -224,8 +219,7 @@ int sendSupervisionFrame(LinkLayerRole role, unsigned char controlField)
     frame[4] = FLAG;
     return writeBytesSerialPort(frame, sizeof(frame));
 }
-int readSupervisionFrame(LinkLayerRole role, unsigned char c)
-{
+int readSupervisionFrame(LinkLayerRole role, unsigned char c){
     unsigned char A_role = (role == LlRx) ? A_T : A_R;
     int state = 0;
     unsigned char byte, bcc[2];
@@ -278,8 +272,7 @@ int readSupervisionFrame(LinkLayerRole role, unsigned char c)
 
 
 
-int sendIFrame(const unsigned char *data, int datasize, int seqNumber)
-{
+int sendIFrame(const unsigned char *data, int datasize, int seqNumber){
 
     unsigned char tmp[datasize + 1];
     memcpy(tmp, data, datasize);
@@ -308,8 +301,7 @@ int sendIFrame(const unsigned char *data, int datasize, int seqNumber)
 }
 
 
-int readIFrame(LinkLayerRole role, unsigned char *dest, int *destsize, int seqNumber)
-{
+int readIFrame(LinkLayerRole role, unsigned char *dest, int *destsize, int seqNumber){
     unsigned char expectedA = A_T;
     unsigned char expectedC = (seqNumber == 0) ? C_I_0 : C_I_1;
     unsigned char bcc1[2];
