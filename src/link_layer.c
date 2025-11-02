@@ -10,14 +10,6 @@
 #include <unistd.h>
 #include <stdlib.h>
 
-
-/*
-#include <stdlib.h> // Para rand() e srand()
-#include <time.h>   // Para time()
-static int random_initialized = 0; 
-#define REJ_PROBABILITY 5
-*/
-
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
 
@@ -163,57 +155,7 @@ int llread(unsigned char *packet)
     }
 }
 
-/*
-int llread(unsigned char *packet)
-{
-    // Inicializa o gerador aleatório na primeira chamada
-    if (!random_initialized) {
-        srand(time(NULL));
-        random_initialized = 1;
-    }
-    
-    unsigned char RR = (sequenceNumber == 0) ? C_RR_1 : C_RR_0;
-    unsigned char REJ = (sequenceNumber == 0) ? C_REJ_0 : C_REJ_1;
-    int packetsizeval = 0;
-    int *packetsize = &packetsizeval;
-    
-    // Tenta ler o I-Frame
-    int response = readIFrame(LlRx, packet, packetsize, sequenceNumber);
-    
-    // --- LÓGICA DE INJEÇÃO DE ERRO ---
-    int inject_rej = 0;
-    
-    if (response == 0) { // O quadro foi lido corretamente (sem BCC2 ou Ns errado)
-        // Se o número aleatório for 0, injeta REJ (1/REJ_PROBABILITY chance)
-        if ((rand() % REJ_PROBABILITY) == 0) {
-            inject_rej = 1;
-        }
-    }
-    // ----------------------------------
 
-    if(response == 1 || inject_rej){ // Se houve erro REAL (1) ou se injetamos erro (inject_rej)
-        if (sendSupervisionFrame(LlRx, REJ) == -1) return -1;
-        printf("Sent REJ (Injected: %s) \n", inject_rej ? "YES" : "NO");
-        
-        // Se o erro foi injetado, NÃO avançamos o sequenceNumber, forçando retransmissão
-        if (inject_rej) {
-            printf("[TEST] 😈 Injetado REJ para forçar retransmissão!\n");
-            return -1;
-        }
-        
-    } else if(response == 0){ // Sucesso REAL
-        if (sendSupervisionFrame(LlRx, RR) == -1) return -1;
-        sequenceNumber = (sequenceNumber + 1) % 2;
-        printf("Sent RR \n");
-        
-    } else { // Outro erro (e.g., llread retorna -1)
-        printf("ERROR \n");
-        return -1;
-    }
-    
-    return *packetsize;
-}
-*/
 
 ////////////////////////////////////////////////
 // LLCLOSE
@@ -292,10 +234,10 @@ int readSupervisionFrame(LinkLayerRole role, unsigned char c)
     while (role == LlTx ? alarmEnabled : TRUE) {
         readByteSerialPort(&byte); 
         switch (state) {
-            case 0: // Flag
+            case 0: 
                 if (byte == FLAG) state = 1;
                 break;
-            case 1: // A
+            case 1: 
                 if (byte == A_role)
                 {
                     bcc[0] = byte;
@@ -303,7 +245,7 @@ int readSupervisionFrame(LinkLayerRole role, unsigned char c)
                 }
                 else state = 0;
                 break;
-            case 2: // C
+            case 2: 
                 if(byte == c)
                 {
                     bcc[1] = byte;
@@ -315,11 +257,11 @@ int readSupervisionFrame(LinkLayerRole role, unsigned char c)
                 }
                 else state = 0;
                 break;
-            case 3: // BCC1
+            case 3: 
                 if (byte == BCC1(bcc[0], bcc[1])) state = 4;
                 else state = 0;
                 break;
-            case 4: //Flag
+            case 4: 
                 if (byte == FLAG) {
                     printf("Frame received (A=0x%02X, C=0x%02X)\n", bcc[0], bcc[1]);
                     return 0;
