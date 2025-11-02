@@ -114,7 +114,7 @@ int llwrite(const unsigned char *buf, int bufSize){
             }
             else if (readSupervisionFrame(LlTx, REJ) == 0)
             {
-                printf("Received REJ frame\n");
+                printf("Response rejected!\n");
                 break;
             }
         }
